@@ -1,0 +1,217 @@
+import { describe, expect, it, vi } from "vitest";
+import { AppCoordinator } from "../src/main/coordinator";
+import { AppState } from "../src/main/state/appState";
+import { AppSettings, DEFAULT_SETTINGS } from "../src/shared/types";
+import fs from "node:fs/promises";
+
+vi.mock("node:fs/promises", () => ({
+  default: {
+    unlink: vi.fn(async () => undefined)
+  }
+}));
+
+function createHarness(options?: { initialSettings?: AppSettings; autoStart?: boolean }) {
+  let onPress: (() => void | Promise<void>) | undefined;
+  let onRelease: (() => void | Promise<void>) | undefined;
+
+  const state = new AppState(options?.initialSettings ?? DEFAULT_SETTINGS);
+  const store = { save: vi.fn() };
+  const hotkey = {
+    setHandlers: vi.fn((press: () => void | Promise<void>, release: () => void | Promise<void>) => {
+      onPress = press;
+      onRelease = release;
+    }),
+    register: vi.fn(),
+    unregisterAll: vi.fn()
+  };
+  const audioCapture = {
+    startCapture: vi.fn(async () => undefined),
+    stopCapture: vi.fn(async () => "/tmp/sample.wav")
+  };
+  const whisper = {
+    transcribe: vi.fn(async () => "hello"),
+    installRuntime: vi.fn(async () => undefined)
+  };
+  const modelManager = { resolveModelPath: vi.fn(async () => "/tmp/model.bin") };
+  const pasteService = { pasteText: vi.fn(async () => undefined) };
+  const permissionService = {
+    requestMicrophonePermission: vi.fn(async () => true),
+    checkAccessibilityPermission: vi.fn(() => true)
+  };
+  const overlay = {
+    show: vi.fn(),
+    hide: vi.fn()
+  };
+
+  const coordinator = new AppCoordinator(
+    state,
+    store as any,
+    hotkey as any,
+    audioCapture as any,
+    whisper as any,
+    modelManager as any,
+    pasteService as any,
+    permissionService as any,
+    overlay as any
+  );
+
+  if (options?.autoStart !== false) {
+    coordinator.start();
+  }
+
+  return {
+    coordinator,
+    state,
+    store,
+    hotkey,
+    audioCapture,
+    whisper,
+    overlay,
+    pasteService,
+    press: async () => {
+      onPress?.();
+      await waitForCoordinator();
+    },
+    release: async () => {
+      onRelease?.();
+      await waitForCoordinator();
+    }
+  };
+}
+
+function waitForCoordinator(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("AppCoordinator error mode behavior", () => {
+  it("falls back to the default hotkey when the saved shortcut is unavailable", () => {
+    const savedShortcut = {
+      keyCode: 20,
+      modifiers: ["cmd", "shift"],
+      display: "Shift + Command + T"
+    } satisfies AppSettings["shortcut"];
+    const harness = createHarness({
+      initialSettings: {
+        ...DEFAULT_SETTINGS,
+        shortcut: savedShortcut
+      },
+      autoStart: false
+    });
+
+    harness.hotkey.register.mockImplementation((shortcut: AppSettings["shortcut"]) => {
+      if (shortcut.keyCode === savedShortcut.keyCode) {
+        throw new Error("Hotkey is unavailable. Choose a different shortcut.");
+      }
+    });
+
+    const startupIssue = harness.coordinator.start();
+
+    expect(startupIssue).toBe("Saved shortcut was unavailable. Reverted to the default hotkey.");
+    expect(harness.hotkey.register).toHaveBeenNthCalledWith(1, savedShortcut);
+    expect(harness.hotkey.register).toHaveBeenNthCalledWith(2, DEFAULT_SETTINGS.shortcut);
+    expect(harness.store.save).toHaveBeenCalledWith({
+      ...DEFAULT_SETTINGS,
+      shortcut: DEFAULT_SETTINGS.shortcut
+    });
+    expect(harness.state.getSnapshot().settings.shortcut).toEqual(DEFAULT_SETTINGS.shortcut);
+    expect(harness.state.getSnapshot().mode).toBe("error");
+  });
+
+  it("keeps launch alive when no hotkey can be registered", () => {
+    const harness = createHarness({ autoStart: false });
+    harness.hotkey.register.mockImplementation(() => {
+      throw new Error("Hotkey is unavailable. Choose a different shortcut.");
+    });
+
+    const startupIssue = harness.coordinator.start();
+
+    expect(startupIssue).toBe("Hotkey is unavailable. Choose a different shortcut.");
+    expect(harness.state.getSnapshot().mode).toBe("error");
+    expect(harness.store.save).not.toHaveBeenCalled();
+  });
+
+  it("cleans up recorded audio after successful transcription", async () => {
+    const harness = createHarness();
+
+    await harness.press();
+    await harness.release();
+
+    expect(fs.unlink).toHaveBeenCalledWith("/tmp/sample.wav");
+  });
+
+  it("cleans up recorded audio after transcription failure", async () => {
+    const harness = createHarness();
+    harness.whisper.transcribe.mockRejectedValue(new Error("Transcription failed"));
+
+    await harness.press();
+    await harness.release();
+
+    expect(fs.unlink).toHaveBeenCalledWith("/tmp/sample.wav");
+  });
+
+  it("keeps idle mode for no-speech stop errors", async () => {
+    const harness = createHarness();
+    harness.audioCapture.stopCapture.mockRejectedValue(new Error("No speech detected"));
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("idle");
+    expect(snapshot.errorMessage).toBe("No speech detected");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "No speech detected");
+  });
+
+  it("keeps idle mode for no-speech transcription errors", async () => {
+    const harness = createHarness();
+    harness.whisper.transcribe.mockRejectedValue(new Error("No speech detected"));
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("idle");
+    expect(snapshot.errorMessage).toBe("No speech detected");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "No speech detected");
+  });
+
+  it("keeps hard failures in error mode", async () => {
+    const harness = createHarness();
+    harness.audioCapture.stopCapture.mockRejectedValue(new Error("Audio capture failed: recorder crashed"));
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("error");
+    expect(snapshot.errorMessage).toBe("Audio capture failed: recorder crashed");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Recording failed");
+  });
+
+  it("shows transcribed messaging when auto-paste is disabled", async () => {
+    const harness = createHarness();
+    harness.state.setSettings({
+      ...DEFAULT_SETTINGS,
+      autoPaste: false
+    });
+
+    await harness.press();
+    await harness.release();
+
+    expect(harness.pasteService.pasteText).not.toHaveBeenCalled();
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Transcribed");
+  });
+
+  it("stores only a preview for long transcripts in app state", async () => {
+    const harness = createHarness();
+    harness.whisper.transcribe.mockResolvedValue(`${"word ".repeat(120)}tail`);
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.lastTranscriptWordCount).toBeGreaterThan(100);
+    expect(snapshot.lastTranscriptPreview.length).toBeLessThanOrEqual(280);
+    expect(snapshot.lastTranscriptTruncated).toBe(true);
+  });
+});

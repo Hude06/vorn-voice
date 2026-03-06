@@ -1,0 +1,51 @@
+{
+  "name": "vorn-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vorn Voice macOS menu bar speech-to-text app",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "prepare:vox-runtime": "node scripts/prepare-vox-runtime.mjs",
+    "dev": "npm run build:main && concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "start": "npm run build && electron .",
+    "test": "vitest run --config vitest.config.ts",
+    "video:render": "remotion render remotion/index.ts VornVoiceDemo out/vorn-voice-demo.mp4",
+    "verify:codesign:mac": "codesign --verify --deep --strict --verbose=2 \"release/mac-arm64/Vorn Voice.app\"",
+    "verify:gatekeeper:mac": "spctl --assess --type execute -v \"release/mac-arm64/Vorn Voice.app\"",
+    "package:mac:local": "npm run build && npm run prepare:vox-runtime && npx electron-builder --config electron-builder.local.yml --mac dmg",
+    "package:mac:release": "npm run build && npm run prepare:vox-runtime && npx electron-builder --config electron-builder.yml --mac dmg"
+  },
+  "dependencies": {
+    "@radix-ui/react-switch": "^1.2.6",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "electron-updater": "^6.8.3",
+    "lucide-react": "^0.576.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.5.0",
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@remotion/cli": "^4.0.431",
+    "@tailwindcss/postcss": "^4.2.1",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.27",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^35.0.0",
+    "postcss": "^8.5.8",
+    "remotion": "^4.0.431",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.3.5",
+    "vitest": "^3.0.8",
+    "wait-on": "^8.0.3"
+  }
+}

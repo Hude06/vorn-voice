@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vorn Voice Overlay</title>
+  </head>
+  <body>
+    <main class="overlay" data-state="listening">
+      <span class="pulse" aria-hidden="true"></span>
+      <div class="overlay-copy">
+        <p id="overlayState">Listening</p>
+        <p id="overlayText">Waiting for speech...</p>
+      </div>
+    </main>
+    <script type="module" src="./overlay.ts"></script>
+  </body>
+</html>

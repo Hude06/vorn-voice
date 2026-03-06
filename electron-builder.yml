@@ -1,0 +1,26 @@
+appId: com.vorn.voice
+productName: Vorn Voice
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+extraResources:
+  - from: build/runtime/bin
+    to: bin
+  - from: build/runtime/runtime-manifest.json
+    to: runtime-manifest.json
+mac:
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  target:
+    - dmg
+    - zip
+  forceCodeSigning: true
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  gatekeeperAssess: false
+publish:
+  provider: generic
+  url: https://vornvoice.app/updates/mac/stable
