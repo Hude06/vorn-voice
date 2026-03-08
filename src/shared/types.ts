@@ -10,6 +10,7 @@ export interface KeyboardShortcut {
 
 export interface AppSettings {
   shortcut: KeyboardShortcut;
+  hotkeyBehavior: HotkeyBehavior;
   activeModelId: string;
   speechCleanupMode: SpeechCleanupMode;
   lowLatencyCaptureEnabled: boolean;
@@ -19,6 +20,8 @@ export interface AppSettings {
   restoreClipboard: boolean;
   autoUpdateEnabled: boolean;
 }
+
+export type HotkeyBehavior = "hold" | "toggle";
 
 export type SpeechCleanupMode = "off" | "balanced" | "aggressive";
 
@@ -179,6 +182,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     modifiers: ["cmd", "shift"],
     display: "Shift + Command + R"
   },
+  hotkeyBehavior: "hold",
   activeModelId: "small.en",
   lowLatencyCaptureEnabled: true,
   preRollMs: 350,

@@ -15,7 +15,7 @@ import fs from "node:fs/promises";
 export class AppCoordinator {
   private isRecording = false;
   private isStartingCapture = false;
-  private releasePending = false;
+  private stopPending = false;
   private runToken = 0;
   private recordingStartedAt?: number;
 
@@ -34,10 +34,10 @@ export class AppCoordinator {
   start(): string | undefined {
     this.hotkey.setHandlers(
       () => {
-        void this.handlePress();
+        void this.handlePressEvent();
       },
       () => {
-        void this.handleRelease();
+        void this.handleReleaseEvent();
       }
     );
 
@@ -103,7 +103,28 @@ export class AppCoordinator {
     this.state.setSettings(settings);
   }
 
-  private async handlePress(): Promise<void> {
+  private async handlePressEvent(): Promise<void> {
+    const behavior = this.state.getSnapshot().settings.hotkeyBehavior;
+
+    if (behavior === "toggle" && (this.isRecording || this.isStartingCapture)) {
+      await this.handleStop();
+      return;
+    }
+
+    await this.handleStart();
+  }
+
+  private async handleReleaseEvent(): Promise<void> {
+    const behavior = this.state.getSnapshot().settings.hotkeyBehavior;
+
+    if (behavior === "toggle") {
+      return;
+    }
+
+    await this.handleStop();
+  }
+
+  private async handleStart(): Promise<void> {
     if (this.isRecording || this.isStartingCapture) {
       return;
     }
@@ -119,6 +140,7 @@ export class AppCoordinator {
 
     if (!allowed || token !== this.runToken) {
       this.recordingStartedAt = undefined;
+      this.stopPending = false;
       this.state.setMode("error", "Microphone permission is required");
       return;
     }
@@ -131,12 +153,13 @@ export class AppCoordinator {
       await this.audioCapture.startCapture();
       this.isStartingCapture = false;
       this.isRecording = true;
-      if (this.releasePending) {
-        this.releasePending = false;
-        void this.handleRelease();
+      if (this.stopPending) {
+        this.stopPending = false;
+        void this.handleStop();
       }
     } catch (error) {
       this.isStartingCapture = false;
+      this.stopPending = false;
       this.recordingStartedAt = undefined;
       const message = toErrorMessage(error, "Audio capture failed");
       this.state.setMode("error", message);
@@ -145,9 +168,9 @@ export class AppCoordinator {
     }
   }
 
-  private async handleRelease(): Promise<void> {
+  private async handleStop(): Promise<void> {
     if (this.isStartingCapture) {
-      this.releasePending = true;
+      this.stopPending = true;
       return;
     }
 
@@ -155,7 +178,7 @@ export class AppCoordinator {
       return;
     }
 
-    this.releasePending = false;
+    this.stopPending = false;
 
     let audioPath: string;
     let diagnostics: SpeechPipelineDiagnostics | undefined;

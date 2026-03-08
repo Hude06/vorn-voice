@@ -291,6 +291,25 @@ describe("AppCoordinator error mode behavior", () => {
     expect(snapshot.lastTranscriptTruncated).toBe(true);
   });
 
+  it("toggles recording on repeated hotkey presses", async () => {
+    const harness = createHarness({
+      initialSettings: {
+        ...DEFAULT_SETTINGS,
+        hotkeyBehavior: "toggle"
+      }
+    });
+
+    await harness.press();
+    await harness.release();
+
+    expect(harness.audioCapture.stopCapture).not.toHaveBeenCalled();
+
+    await harness.press();
+
+    expect(harness.audioCapture.stopCapture).toHaveBeenCalledTimes(1);
+    expect(harness.whisper.transcribe).toHaveBeenCalledTimes(1);
+  });
+
   it("handles release while capture startup is still in flight", async () => {
     const harness = createHarness();
 
@@ -307,6 +326,33 @@ describe("AppCoordinator error mode behavior", () => {
     resolveStart();
     await pressPromise;
     await releasePromise;
+    await waitForCoordinator();
+
+    expect(harness.audioCapture.stopCapture).toHaveBeenCalledTimes(1);
+    expect(harness.whisper.transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after startup when toggle mode receives a second press", async () => {
+    const harness = createHarness({
+      initialSettings: {
+        ...DEFAULT_SETTINGS,
+        hotkeyBehavior: "toggle"
+      }
+    });
+
+    let resolveStart: () => void = () => undefined;
+    const startPromise = new Promise<undefined>((resolve) => {
+      resolveStart = () => resolve(undefined);
+    });
+    harness.audioCapture.startCapture.mockImplementation(() => startPromise);
+
+    const firstPressPromise = harness.press();
+    await waitForCoordinator();
+    const secondPressPromise = harness.press();
+
+    resolveStart();
+    await firstPressPromise;
+    await secondPressPromise;
     await waitForCoordinator();
 
     expect(harness.audioCapture.stopCapture).toHaveBeenCalledTimes(1);

@@ -781,8 +781,20 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
       {onboardingStep === 2 ? (
         <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
           <SectionHeading title="Pick how dictation feels" text="Choose the shortcut and decide whether Vorn pastes automatically or leaves text on your clipboard." />
-          <HotkeyPanel capturePending={capturePending} onBegin={beginHotkeyCapture} onCancel={cancelHotkeyCapture} shortcut={draft.shortcut} />
+          <HotkeyPanel
+            capturePending={capturePending}
+            hotkeyBehavior={draft.hotkeyBehavior}
+            onBegin={beginHotkeyCapture}
+            onCancel={cancelHotkeyCapture}
+            shortcut={draft.shortcut}
+          />
           <div className="flex flex-col gap-3">
+            <ToggleRow
+              checked={draft.hotkeyBehavior === "toggle"}
+              detail="Hold records while pressed. Toggle starts on first press and stops on second press."
+              label="Press once to start and again to stop"
+              onChange={(checked) => setDraft((current) => ({ ...current, hotkeyBehavior: checked ? "toggle" : "hold" }))}
+            />
             <ToggleRow
               checked={draft.autoPaste}
               detail="Paste into the frontmost app after transcription finishes."
@@ -914,8 +926,20 @@ function SettingsView(props: SettingsViewProps): ReactElement {
 
       <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
         <SectionHeading title="Dictation" text="Choose your shortcut and how Vorn should deliver text after transcription." />
-        <HotkeyPanel capturePending={capturePending} onBegin={beginHotkeyCapture} onCancel={cancelHotkeyCapture} shortcut={draft.shortcut} />
+        <HotkeyPanel
+          capturePending={capturePending}
+          hotkeyBehavior={draft.hotkeyBehavior}
+          onBegin={beginHotkeyCapture}
+          onCancel={cancelHotkeyCapture}
+          shortcut={draft.shortcut}
+        />
         <div className="flex flex-col gap-3">
+          <ToggleRow
+            checked={draft.hotkeyBehavior === "toggle"}
+            detail="Hold records while pressed. Toggle starts on first press and stops on second press."
+            label="Press once to start and again to stop"
+            onChange={(checked) => setDraft((current) => ({ ...current, hotkeyBehavior: checked ? "toggle" : "hold" }))}
+          />
           <ToggleRow checked={draft.autoPaste} detail="Paste into the frontmost app after each transcript." label="Auto-paste text" onChange={(checked) => setDraft((current) => ({ ...current, autoPaste: checked }))} />
           <ToggleRow checked={draft.restoreClipboard} detail="Restore your clipboard after auto-paste runs." label="Restore clipboard" onChange={(checked) => setDraft((current) => ({ ...current, restoreClipboard: checked }))} />
         </div>
@@ -1139,15 +1163,20 @@ function ModelPanel(props: ModelPanelProps): ReactElement {
 
 type HotkeyPanelProps = {
   capturePending: boolean;
+  hotkeyBehavior: AppSettings["hotkeyBehavior"];
   onBegin: () => Promise<void>;
   onCancel: () => Promise<void>;
   shortcut: KeyboardShortcut;
 };
 
-function HotkeyPanel({ capturePending, onBegin, onCancel, shortcut }: HotkeyPanelProps): ReactElement {
+function HotkeyPanel({ capturePending, hotkeyBehavior, onBegin, onCancel, shortcut }: HotkeyPanelProps): ReactElement {
+  const helpText = hotkeyBehavior === "toggle"
+    ? "Press this shortcut once to record. Press it again to transcribe."
+    : "Hold this shortcut to record. Release it to transcribe.";
+
   return (
     <section className={cn("mb-4", SUB_PANEL_CLASS)}>
-      <SectionHeading title="Shortcut" text="Hold this shortcut to record. Release it to transcribe." compact />
+      <SectionHeading title="Shortcut" text={helpText} compact />
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <span className="inline-flex min-w-[170px] items-center justify-center rounded-full border border-[rgb(var(--border))] bg-[#111111] px-4 py-2 text-sm">{capturePending ? "Listening for keys..." : shortcut.display ?? "Not set"}</span>
         {capturePending ? (
