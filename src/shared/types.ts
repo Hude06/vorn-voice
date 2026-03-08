@@ -183,7 +183,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     display: "Shift + Command + R"
   },
   hotkeyBehavior: "hold",
-  activeModelId: "small.en",
+  activeModelId: "base.en",
   lowLatencyCaptureEnabled: true,
   preRollMs: 350,
   postRollMs: 220,

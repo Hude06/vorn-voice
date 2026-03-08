@@ -17,6 +17,7 @@ const MAX_REDIRECTS = 5;
 await fs.mkdir(runtimeDir, { recursive: true });
 await fs.rm(runtimeLibDir, { recursive: true, force: true });
 await fs.mkdir(runtimeLibDir, { recursive: true });
+await fs.rm(modelsDir, { recursive: true, force: true });
 await fs.mkdir(modelsDir, { recursive: true });
 
 const binaries = [
@@ -43,19 +44,9 @@ const binaries = [
 
 const bundledModels = [
   {
-    id: "tiny.en",
-    fileName: "ggml-tiny.en.bin",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
-  },
-  {
     id: "base.en",
     fileName: "ggml-base.en.bin",
     downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
-  },
-  {
-    id: "small.en",
-    fileName: "ggml-small.en.bin",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
   }
 ];
 
