@@ -152,5 +152,6 @@ Keep edits minimal, typed, and aligned with existing patterns.
 - Do not run packaging/release commands unless explicitly requested.
 - Do not add dependencies unless required by the task.
 - Do not remove or revert unrelated user changes.
+- Never read `.env` files (or any `.env.*` files) unless the user explicitly requests it for the current task.
 - Keep comments minimal and only for non-obvious logic.
 - Commit and push changes for each completed task when explicitly requested by the user in that task.

@@ -6,6 +6,10 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+/.env
+/.env.*
+!.env.example
+!.env*.example
 /build/runtime/
 /dist/
 /release/
