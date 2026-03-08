@@ -153,3 +153,4 @@ Keep edits minimal, typed, and aligned with existing patterns.
 - Do not add dependencies unless required by the task.
 - Do not remove or revert unrelated user changes.
 - Keep comments minimal and only for non-obvious logic.
+- Commit and push changes for each completed task when explicitly requested by the user in that task.
