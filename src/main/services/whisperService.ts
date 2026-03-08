@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { SpeechRuntimeDiagnostics } from "../../shared/types";
+import { SpeechRuntimeDiagnostics, WhisperTranscriptionDiagnostics } from "../../shared/types";
+import { resolveBundledExecutable } from "./runtimeAssetPaths";
 
 type WhisperRuntimeLookup = {
   path?: string;
@@ -18,16 +19,23 @@ type CommandResult = {
   stderr: string;
 };
 
-const LONG_AUDIO_THRESHOLD_SECONDS = 30;
-const FORCE_CHUNK_AUDIO_THRESHOLD_SECONDS = 90;
-const CHUNK_DURATION_SECONDS = 25;
-const CHUNK_OVERLAP_SECONDS = 2;
+type ChunkedTranscriptionResult = {
+  blankChunkCount: number;
+  chunkCount: number;
+  text: string;
+};
+
+const LONG_AUDIO_THRESHOLD_SECONDS = 45;
+const FORCE_CHUNK_AUDIO_THRESHOLD_SECONDS = 180;
+const CHUNK_DURATION_SECONDS = 75;
+const CHUNK_OVERLAP_SECONDS = 6;
 const MIN_REASONABLE_WORDS_FOR_LONG_AUDIO = 2;
 const OVERLAP_MATCH_WINDOW_WORDS = 24;
 
 export class WhisperService {
   private installAttempted = false;
   private installInFlight?: Promise<boolean>;
+  private lastDiagnostics?: WhisperTranscriptionDiagnostics;
 
   async installRuntime(): Promise<SpeechRuntimeDiagnostics> {
     const existing = await this.locateCLIPath();
@@ -37,6 +45,16 @@ export class WhisperService {
         whisperCliPath: existing.path,
         checkedPaths: existing.checkedPaths,
         pathEnv: existing.pathEnv
+      };
+    }
+
+    const bundledPath = await resolveBundledExecutable("bin", "whisper-cli");
+    if (bundledPath) {
+      return {
+        whisperCliFound: true,
+        whisperCliPath: bundledPath,
+        checkedPaths: [bundledPath],
+        pathEnv: process.env.PATH ?? ""
       };
     }
 
@@ -53,12 +71,23 @@ export class WhisperService {
     throw new Error("whisper-cli not found. Install the Whisper runtime from Settings.");
   }
 
-  async transcribe(audioPath: string, modelPath: string): Promise<string> {
+  async transcribe(audioPath: string, modelPath: string, modelId = path.basename(modelPath)): Promise<string> {
+    this.lastDiagnostics = undefined;
     const cliPath = await this.ensureRuntimeAvailable();
     const audioDurationSeconds = await this.getAudioDurationSeconds(audioPath);
 
     if (audioDurationSeconds !== undefined && audioDurationSeconds >= FORCE_CHUNK_AUDIO_THRESHOLD_SECONDS) {
-      return this.transcribeChunked(audioPath, modelPath, cliPath, audioDurationSeconds);
+      const chunked = await this.transcribeChunked(audioPath, modelPath, cliPath, audioDurationSeconds);
+      this.lastDiagnostics = {
+        runtimePath: cliPath,
+        modelId,
+        modelPath,
+        audioDurationSeconds,
+        chunked: true,
+        chunkCount: chunked.chunkCount,
+        blankChunkCount: chunked.blankChunkCount
+      };
+      return chunked.text;
     }
 
     const transcript = await this.transcribeSingle(audioPath, modelPath, cliPath);
@@ -67,10 +96,34 @@ export class WhisperService {
       audioDurationSeconds >= LONG_AUDIO_THRESHOLD_SECONDS &&
       this.countWords(transcript) < MIN_REASONABLE_WORDS_FOR_LONG_AUDIO
     ) {
-      return this.transcribeChunked(audioPath, modelPath, cliPath, audioDurationSeconds);
+      const chunked = await this.transcribeChunked(audioPath, modelPath, cliPath, audioDurationSeconds);
+      this.lastDiagnostics = {
+        runtimePath: cliPath,
+        modelId,
+        modelPath,
+        audioDurationSeconds,
+        chunked: true,
+        chunkCount: chunked.chunkCount,
+        blankChunkCount: chunked.blankChunkCount
+      };
+      return chunked.text;
     }
 
+    this.lastDiagnostics = {
+      runtimePath: cliPath,
+      modelId,
+      modelPath,
+      audioDurationSeconds,
+      chunked: false,
+      chunkCount: 1,
+      blankChunkCount: 0
+    };
+
     return transcript;
+  }
+
+  getLastDiagnostics(): WhisperTranscriptionDiagnostics | undefined {
+    return this.lastDiagnostics;
   }
 
   private async transcribeChunked(
@@ -78,13 +131,18 @@ export class WhisperService {
     modelPath: string,
     cliPath: string,
     audioDurationSeconds: number
-  ): Promise<string> {
+  ): Promise<ChunkedTranscriptionResult> {
     const chunks = await this.splitAudioIntoChunks(audioPath, audioDurationSeconds);
     if (chunks.length === 0) {
-      return this.transcribeSingle(audioPath, modelPath, cliPath);
+      return {
+        text: await this.transcribeSingle(audioPath, modelPath, cliPath),
+        chunkCount: 1,
+        blankChunkCount: 0
+      };
     }
 
     const chunkTranscripts: string[] = [];
+    let blankChunkCount = 0;
     let lastChunkError: Error | undefined;
     for (const chunkPath of chunks) {
       try {
@@ -93,8 +151,12 @@ export class WhisperService {
           chunkTranscripts.push(text.trim());
         }
       } catch (error) {
-        if (error instanceof Error && error.message !== "No speech detected") {
-          lastChunkError = error;
+        if (error instanceof Error) {
+          if (error.message === "No speech detected") {
+            blankChunkCount += 1;
+          } else {
+            lastChunkError = error;
+          }
         }
       }
     }
@@ -109,7 +171,11 @@ export class WhisperService {
       throw new Error("No speech detected");
     }
 
-    return combined;
+    return {
+      text: combined,
+      chunkCount: chunks.length,
+      blankChunkCount
+    };
   }
 
   private async transcribeSingle(audioPath: string, modelPath: string, cliPath: string): Promise<string> {
@@ -194,7 +260,18 @@ export class WhisperService {
       }
 
       const chunkPath = path.join(os.tmpdir(), `voicebar-whisper-chunk-${randomUUID()}.wav`);
-      const result = await this.runCommand(soxPath, [audioPath, chunkPath, "trim", `${start}`, `${length}`], {}, 60_000);
+      const result = await this.runCommand(
+        soxPath,
+        [
+          audioPath,
+          chunkPath,
+          "trim",
+          `${start}`,
+          `${length}`
+        ],
+        {},
+        60_000
+      );
       if (result.code === 0) {
         chunks.push(chunkPath);
       } else {
@@ -207,10 +284,10 @@ export class WhisperService {
 
   private async resolveSoxExecutable(): Promise<string | undefined> {
     const fixedCandidates = [
-      path.join(process.resourcesPath, "bin", "sox"),
+      await resolveBundledExecutable("bin", "sox"),
       "/opt/homebrew/bin/sox",
       "/usr/local/bin/sox"
-    ];
+    ].filter((candidate): candidate is string => Boolean(candidate));
     for (const candidate of fixedCandidates) {
       if (await this.isExecutable(candidate)) {
         return candidate;
@@ -337,15 +414,15 @@ export class WhisperService {
 
     const executableNames = ["whisper-cli", "main"];
     const fixedCandidates = [
-      path.join(process.resourcesPath, "bin", "whisper-cli"),
-      path.join(process.resourcesPath, "bin", "main"),
+      await resolveBundledExecutable("bin", "whisper-cli"),
+      await resolveBundledExecutable("bin", "main"),
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
       "/usr/local/opt/whisper-cpp/bin/whisper-cli",
       "/opt/homebrew/bin/whisper-cli",
       "/usr/local/bin/whisper-cli",
       "/opt/homebrew/bin/main",
       "/usr/local/bin/main"
-    ];
+    ].filter((candidate): candidate is string => Boolean(candidate));
 
     for (const candidate of fixedCandidates) {
       if (await checkPath(candidate)) {

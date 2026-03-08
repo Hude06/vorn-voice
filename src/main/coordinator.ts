@@ -7,13 +7,15 @@ import { PermissionService } from "./services/permissionService";
 import { SettingsStore } from "./services/settingsStore";
 import { WhisperService } from "./services/whisperService";
 import { OverlayWindow } from "./windows/overlayWindow";
-import { AppSettings, DEFAULT_SETTINGS } from "../shared/types";
+import { AppSettings, DEFAULT_SETTINGS, SpeechPipelineDiagnostics } from "../shared/types";
 import { validateShortcut } from "../shared/shortcuts";
 import { computeWpm, countWords, MIN_SPEECH_SAMPLE_DURATION_MS } from "../shared/speechStats";
 import fs from "node:fs/promises";
 
 export class AppCoordinator {
   private isRecording = false;
+  private isStartingCapture = false;
+  private releasePending = false;
   private runToken = 0;
   private recordingStartedAt?: number;
 
@@ -46,8 +48,15 @@ export class AppCoordinator {
     };
 
     try {
+      this.audioCapture.configureRealtimeCapture({
+        lowLatencyEnabled: settings.lowLatencyCaptureEnabled,
+        preRollMs: settings.preRollMs,
+        postRollMs: settings.postRollMs
+      });
       this.hotkey.register(settings.shortcut);
-      return undefined;
+      this.hotkey.warmup();
+      void this.audioCapture.prewarmCapture().catch(() => undefined);
+      return this.hotkey.getStatusError();
     } catch (error) {
       if (sameShortcut(settings.shortcut, DEFAULT_SETTINGS.shortcut)) {
         const message = toErrorMessage(error, "Failed to register hotkey. Choose a different shortcut.");
@@ -59,7 +68,8 @@ export class AppCoordinator {
         this.hotkey.register(DEFAULT_SETTINGS.shortcut);
         this.store.save(fallbackSettings);
         this.state.setSettings(fallbackSettings);
-        const message = "Saved shortcut was unavailable. Reverted to the default hotkey.";
+        const hookWarning = this.hotkey.getStatusError();
+        const message = hookWarning ?? "Saved shortcut was unavailable. Reverted to the default hotkey.";
         this.state.setMode("error", message);
         return message;
       } catch (fallbackError) {
@@ -72,6 +82,7 @@ export class AppCoordinator {
 
   stop(): void {
     this.hotkey.unregisterAll();
+    void this.audioCapture.shutdown().catch(() => undefined);
   }
 
   updateSettings(settings: AppSettings): void {
@@ -81,32 +92,51 @@ export class AppCoordinator {
     }
 
     this.hotkey.register(settings.shortcut);
+    this.audioCapture.configureRealtimeCapture({
+      lowLatencyEnabled: settings.lowLatencyCaptureEnabled,
+      preRollMs: settings.preRollMs,
+      postRollMs: settings.postRollMs
+    });
+    void this.audioCapture.prewarmCapture().catch(() => undefined);
 
     this.store.save(settings);
     this.state.setSettings(settings);
   }
 
   private async handlePress(): Promise<void> {
-    if (this.isRecording) {
+    if (this.isRecording || this.isStartingCapture) {
       return;
     }
 
     this.runToken += 1;
     const token = this.runToken;
+    this.recordingStartedAt = Date.now();
 
-    const allowed = await this.permissionService.requestMicrophonePermission();
+    let allowed = this.permissionService.getMicrophonePermissionStatus() === "granted";
+    if (!allowed) {
+      allowed = await this.permissionService.requestMicrophonePermission();
+    }
+
     if (!allowed || token !== this.runToken) {
+      this.recordingStartedAt = undefined;
       this.state.setMode("error", "Microphone permission is required");
       return;
     }
 
+    this.state.setMode("listening");
+    this.overlay.show("listening", "Listening...");
+    this.isStartingCapture = true;
+
     try {
       await this.audioCapture.startCapture();
+      this.isStartingCapture = false;
       this.isRecording = true;
-      this.recordingStartedAt = Date.now();
-      this.state.setMode("listening");
-      this.overlay.show("listening", "Listening...");
+      if (this.releasePending) {
+        this.releasePending = false;
+        void this.handleRelease();
+      }
     } catch (error) {
+      this.isStartingCapture = false;
       this.recordingStartedAt = undefined;
       const message = toErrorMessage(error, "Audio capture failed");
       this.state.setMode("error", message);
@@ -116,14 +146,28 @@ export class AppCoordinator {
   }
 
   private async handleRelease(): Promise<void> {
+    if (this.isStartingCapture) {
+      this.releasePending = true;
+      return;
+    }
+
     if (!this.isRecording) {
       return;
     }
 
+    this.releasePending = false;
+
     let audioPath: string;
+    let diagnostics: SpeechPipelineDiagnostics | undefined;
     const recordingEndedAt = Date.now();
     try {
-      audioPath = await this.audioCapture.stopCapture();
+      const settings = this.state.getSnapshot().settings;
+      audioPath = await this.audioCapture.stopCapture(settings.speechCleanupMode);
+      diagnostics = {
+        recordedAt: recordingEndedAt,
+        requestedCleanupMode: settings.speechCleanupMode,
+        capture: this.audioCapture.getLastDiagnostics()
+      };
       this.isRecording = false;
       this.state.setMode("transcribing");
       this.overlay.show("transcribing", "Transcribing...");
@@ -131,12 +175,18 @@ export class AppCoordinator {
       this.isRecording = false;
       this.recordingStartedAt = undefined;
       const message = toErrorMessage(error, "Could not stop recording");
+      this.state.setSpeechDiagnostics({
+        recordedAt: recordingEndedAt,
+        requestedCleanupMode: this.state.getSnapshot().settings.speechCleanupMode,
+        capture: this.audioCapture.getLastDiagnostics(),
+        lastError: message
+      });
       if (isNonFatalMessage(message)) {
         this.state.setMode("idle", message);
         this.overlay.show("message", message);
       } else {
         this.state.setMode("error", message);
-        this.overlay.show("message", "Recording failed");
+        this.overlay.show("message", message);
       }
       this.overlay.hide(1200);
       return;
@@ -148,8 +198,14 @@ export class AppCoordinator {
 
     try {
       const snapshot = this.state.getSnapshot();
-      const modelPath = await this.modelManager.resolveModelPath(snapshot.settings.activeModelId);
-      const transcript = await this.whisper.transcribe(audioPath, modelPath);
+      const modelPath = await this.resolveTranscriptionModelPath(snapshot.settings.activeModelId);
+      const transcript = await this.whisper.transcribe(audioPath, modelPath, snapshot.settings.activeModelId);
+      this.state.setSpeechDiagnostics({
+        recordedAt: recordingEndedAt,
+        requestedCleanupMode: snapshot.settings.speechCleanupMode,
+        capture: diagnostics?.capture,
+        transcription: this.whisper.getLastDiagnostics()
+      });
 
       this.state.setTranscript(transcript);
       this.state.setMode("idle");
@@ -180,17 +236,29 @@ export class AppCoordinator {
       this.overlay.hide(900);
     } catch (error) {
       const message = toErrorMessage(error, "Transcription failed");
+      this.state.setSpeechDiagnostics({
+        recordedAt: recordingEndedAt,
+        requestedCleanupMode: this.state.getSnapshot().settings.speechCleanupMode,
+        capture: diagnostics?.capture,
+        transcription: this.whisper.getLastDiagnostics(),
+        lastError: message
+      });
       if (isNonFatalMessage(message)) {
         this.state.setMode("idle", message);
         this.overlay.show("message", message);
       } else {
         this.state.setMode("error", message);
-        this.overlay.show("message", "Transcription failed");
+        this.overlay.show("message", message);
       }
       this.overlay.hide(1400);
     } finally {
       await fs.unlink(audioPath).catch(() => undefined);
     }
+  }
+
+  private async resolveTranscriptionModelPath(modelId: string): Promise<string> {
+    await this.whisper.ensureRuntimeAvailable();
+    return this.modelManager.resolveModelPath(modelId);
   }
 }
 
@@ -203,7 +271,7 @@ function sameShortcut(left: AppSettings["shortcut"], right: AppSettings["shortcu
 }
 
 function isNonFatalMessage(message: string): boolean {
-  return message === "No speech detected";
+  return message === "No speech detected" || message.startsWith("Input too quiet");
 }
 
 function toErrorMessage(error: unknown, fallback: string): string {

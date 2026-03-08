@@ -1,3 +1,4 @@
+import { PrivacyPane } from "../../shared/types";
 import { shell, systemPreferences } from "electron";
 
 export class PermissionService {
@@ -13,7 +14,18 @@ export class PermissionService {
     return systemPreferences.isTrustedAccessibilityClient(prompt);
   }
 
-  openPrivacySettings(): void {
-    void shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy");
+  getMicrophonePermissionStatus(): "granted" | "denied" | "restricted" | "not-determined" | "unknown" {
+    const status = systemPreferences.getMediaAccessStatus("microphone");
+
+    if (status === "granted" || status === "denied" || status === "restricted" || status === "not-determined") {
+      return status;
+    }
+
+    return "unknown";
+  }
+
+  openPrivacySettings(pane: PrivacyPane = "accessibility"): void {
+    const suffix = pane === "microphone" ? "Privacy_Microphone" : "Privacy_Accessibility";
+    void shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${suffix}`);
   }
 }

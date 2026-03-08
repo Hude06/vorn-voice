@@ -1,1572 +1,1464 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatShortcut, validateShortcut } from "../../shared/shortcuts";
+import type { ReactElement } from "react";
 import {
   AppSettings,
   AppSnapshot,
-  DEFAULT_ONBOARDING_STATE,
-  DEFAULT_SETTINGS,
+  KeyboardShortcut,
+  ModelListItem,
   OnboardingState,
+  PermissionsSnapshot,
+  SpeechCleanupMode,
+  SpeechPipelineDiagnostics,
   SettingsWindowMode,
   SpeechRuntimeDiagnostics,
-  SpeechSample
+  UpdateStatus
 } from "../../shared/types";
-import {
-  applySpeechSample,
-  averageWpm,
-  parseSpeechStats,
-  SPEECH_STATS_STORAGE_KEY,
-  SpeechStats,
-  wordsThisWeek
-} from "../../shared/speechStats";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card, CardHeader } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Switch } from "../components/ui/switch";
+import { cn } from "../lib/utils";
 
-type ModelRow = {
-  id: string;
-  name: string;
-  details: string;
-  installed: boolean;
-};
-
-type VoicebarApi = NonNullable<Window["voicebar"]>;
-type SectionId = "overview" | "hotkey" | "models" | "runtime" | "permissions" | "paste" | "updates" | "diagnostics";
-type ThemePreference = "system" | "light" | "dark";
 type StatusTone = "neutral" | "success" | "warning" | "danger";
-type SectionMeta = { id: SectionId; label: string; description: string };
-type StatusMessage = { tone: StatusTone; text: string };
-type HealthTone = "ready" | "attention" | "pending";
 
-const SETTINGS_SECTIONS: SectionMeta[] = [
-  { id: "overview", label: "Overview", description: "Readiness and workflow" },
-  { id: "hotkey", label: "Hotkey", description: "Push-to-talk controls" },
-  { id: "models", label: "Models", description: "Local model management" },
-  { id: "runtime", label: "Runtime", description: "Engine diagnostics" },
-  { id: "permissions", label: "Permissions", description: "macOS access" },
-  { id: "paste", label: "Paste", description: "Clipboard behavior" },
-  { id: "updates", label: "Updates", description: "Automatic updates" },
-  { id: "diagnostics", label: "Diagnostics", description: "Speech insights" }
-];
-
-const ONBOARDING_STEPS = ["Welcome", "Pick Model", "Runtime & Permissions", "Hotkey", "Finish"];
-const CRITICAL_IPC_TIMEOUT_MS = 5000;
-const NON_CRITICAL_IPC_TIMEOUT_MS = 4500;
-const FALLBACK_SNAPSHOT: AppSnapshot = {
-  mode: "idle",
-  lastTranscriptPreview: "",
-  lastTranscriptWordCount: 0,
-  lastTranscriptTruncated: false,
-  settings: DEFAULT_SETTINGS
+type CriticalSettingsData = {
+  snapshot: AppSnapshot;
+  models: ModelListItem[];
 };
-const PRELOAD_ERROR_MESSAGE = "Bridge unavailable. Restart Vorn Voice to reload the settings window.";
-const THEME_STORAGE_KEY = "voicebar.ui.theme.v1";
 
-export function SettingsApp() {
-  const [windowMode, setWindowMode] = useState<SettingsWindowMode>(parseWindowMode());
-  const [activeSection, setActiveSection] = useState<SectionId>("overview");
-  const [onboardingStep, setOnboardingStep] = useState(0);
-  const [onboarding, setOnboarding] = useState<OnboardingState>(DEFAULT_ONBOARDING_STATE);
-  const [draft, setDraft] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [models, setModels] = useState<ModelRow[]>([]);
-  const [recordingHotkey, setRecordingHotkey] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isCompletingOnboarding, setIsCompletingOnboarding] = useState(false);
-  const [status, setStatus] = useState<StatusMessage>({ tone: "neutral", text: "Loading workspace..." });
-  const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
-  const [speechRuntime, setSpeechRuntime] = useState<SpeechRuntimeDiagnostics | null>(null);
-  const [isInstallingRuntime, setIsInstallingRuntime] = useState(false);
-  const [speechStats, setSpeechStats] = useState<SpeechStats>(() => loadSpeechStats());
-  const [themePreference, setThemePreference] = useState<ThemePreference>(() => loadThemePreference());
+type SupportChecksData = {
+  permission?: PermissionsSnapshot;
+  runtime?: SpeechRuntimeDiagnostics;
+  errors: string[];
+};
 
-  const isDirtyRef = useRef(false);
-  const recordingRef = useRef(false);
+type StatusMessage = {
+  tone: StatusTone;
+  text: string;
+};
+
+type DraftUpdateOptions = {
+  immediateSave?: boolean;
+};
+
+const AUTOSAVE_DELAY_MS = 500;
+const TOAST_DURATION_MS = 1800;
+
+const ONBOARDING_STEPS = [
+  "Choose a model",
+  "Enable access",
+  "Pick a hotkey",
+  "Finish"
+] as const;
+
+const CARD_BASE_CLASS = "rounded-2xl border-[rgb(var(--border))] bg-[rgb(var(--card))]";
+const SUB_PANEL_CLASS = "rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-4";
+const TOKEN_BADGE_CLASS = "rounded-full bg-[#151515] text-[rgb(var(--muted-foreground))]";
+
+export function SettingsApp(): ReactElement {
   const voicebar = getVoicebarApi();
+  const [windowMode, setWindowMode] = useState<SettingsWindowMode>(parseWindowMode());
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+  const [draft, setDraft] = useState<AppSettings | null>(null);
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
+  const [models, setModels] = useState<ModelListItem[]>([]);
+  const [permissionState, setPermissionState] = useState<PermissionsSnapshot | null>(null);
+  const [runtimeState, setRuntimeState] = useState<SpeechRuntimeDiagnostics | null>(null);
+  const [downloadModelId, setDownloadModelId] = useState<string | null>(null);
+  const [removingModelId, setRemovingModelId] = useState<string | null>(null);
+  const [capturePending, setCapturePending] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [installingRuntime, setInstallingRuntime] = useState(false);
+  const [completingOnboarding, setCompletingOnboarding] = useState(false);
+  const [status, setStatus] = useState<StatusMessage>({ tone: "neutral", text: "Loading settings..." });
+  const [toast, setToast] = useState<StatusMessage | null>(null);
+  const [appVersion, setAppVersion] = useState("Unknown");
+  const [updateState, setUpdateState] = useState<UpdateStatus | null>(null);
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const draftRef = useRef<AppSettings | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const skipAutosaveRef = useRef(true);
+  const nextAutosaveDelayRef = useRef(AUTOSAVE_DELAY_MS);
+  const lastSavedSignatureRef = useRef<string | null>(null);
+  const requestSaveRef = useRef<(nextSettings: AppSettings, options?: { statusText?: string; toastText?: string }) => Promise<boolean>>(async () => false);
 
-  const resolvedTheme = useMemo<"light" | "dark">(() => {
-    if (themePreference === "light" || themePreference === "dark") {
-      return themePreference;
+  const ready = Boolean(snapshot && draft && onboarding);
+  const installedModels = useMemo(() => models.filter((model) => model.installed), [models]);
+  const activeModel = useMemo(
+    () => models.find((model) => model.id === draft?.activeModelId),
+    [draft?.activeModelId, models]
+  );
+  const activeModelInstalled = Boolean(activeModel?.installed);
+  const runtimeReady = Boolean(runtimeState?.whisperCliFound);
+  const microphoneGranted = permissionState?.microphone === "granted";
+  const accessibilityReady = draft?.autoPaste ? permissionState?.accessibility === true : true;
+  const hotkeyReady = permissionState?.hotkeyReady !== false;
+  const setupReady = Boolean(activeModelInstalled && runtimeReady && microphoneGranted && accessibilityReady && hotkeyReady);
+
+  const clearAutosaveTimer = () => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  };
+
+  const showToast = (message: StatusMessage) => {
+    setToast(message);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
     }
 
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }, [themePreference]);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, TOAST_DURATION_MS);
+  };
 
   useEffect(() => {
-    isDirtyRef.current = isDirty;
-  }, [isDirty]);
-
-  useEffect(() => {
-    recordingRef.current = recordingHotkey;
-  }, [recordingHotkey]);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = resolvedTheme;
-    document.documentElement.style.colorScheme = resolvedTheme;
-  }, [resolvedTheme]);
+    document.documentElement.dataset.theme = "dark";
+    document.documentElement.style.colorScheme = "dark";
+  }, []);
 
   useEffect(() => {
     if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
+      setStatus({ tone: "danger", text: "Bridge unavailable. Restart Vorn Voice and open settings again." });
       return;
     }
 
-    let mounted = true;
+    let cancelled = false;
 
     const bootstrap = async () => {
-      const [criticalResult, onboardingResult] = await Promise.allSettled([
-        loadCriticalSettingsData(voicebar),
-        withTimeout(voicebar.getOnboardingState(), CRITICAL_IPC_TIMEOUT_MS, "Onboarding state")
-      ]);
+      try {
+        const [critical, onboardingState, currentAppVersion, currentUpdateState] = await Promise.all([
+          loadCriticalSettingsData(voicebar),
+          withTimeout(voicebar.getOnboardingState(), 5000, "Onboarding"),
+          withTimeout(voicebar.getAppVersion(), 5000, "App version"),
+          withTimeout(voicebar.getUpdateState(), 5000, "Update status")
+        ]);
 
-      if (!mounted) {
-        return;
-      }
-
-      const warnings: string[] = [];
-
-      if (criticalResult.status === "fulfilled") {
-        setDraft(criticalResult.value.snapshot.settings);
-        setModels(criticalResult.value.listedModels);
-        warnings.push(...criticalResult.value.warnings);
-        applySampleToStats(criticalResult.value.snapshot.lastSpeechSample, setSpeechStats);
-      } else {
-        warnings.push(`Settings load failed: ${errorToMessage(criticalResult.reason)}`);
-        setDraft(FALLBACK_SNAPSHOT.settings);
-      }
-
-      if (onboardingResult.status === "fulfilled") {
-        setOnboarding(onboardingResult.value);
-      } else {
-        warnings.push(`Onboarding load failed: ${errorToMessage(onboardingResult.reason)}`);
-      }
-
-      updateStatus(setStatus, warnings.length > 0 ? `Loaded with warnings: ${warnings.join("; ")}` : "Workspace ready", warnings.length > 0 ? "warning" : "success");
-
-      void loadNonCriticalSettingsData(voicebar).then((result) => {
-        if (!mounted) {
+        if (cancelled) {
           return;
         }
 
-        if (result.permission) {
-          setAccessibilityGranted(result.permission.accessibility);
+        setSnapshot(critical.snapshot);
+        draftRef.current = critical.snapshot.settings;
+        lastSavedSignatureRef.current = settingsSignature(critical.snapshot.settings);
+        skipAutosaveRef.current = true;
+        setDraft(critical.snapshot.settings);
+        setModels(critical.models);
+        setOnboarding(onboardingState);
+        setAppVersion(currentAppVersion);
+        setUpdateState(currentUpdateState);
+        setWindowMode(onboardingState.completed ? parseWindowMode() : "onboarding");
+
+        const support = await loadSupportChecks(voicebar);
+        if (cancelled) {
+          return;
         }
 
-        if (result.runtime) {
-          setSpeechRuntime(result.runtime);
+        if (support.permission) {
+          setPermissionState(support.permission);
         }
 
-        if (result.errors.length > 0) {
-          updateStatus(setStatus, `Loaded with warnings: ${result.errors.join("; ")}`, "warning");
+        if (support.runtime) {
+          setRuntimeState(support.runtime);
         }
-      });
+
+        setStatus({
+          tone: support.errors.length > 0 ? "warning" : "neutral",
+          text: support.errors[0] ?? (onboardingState.completed ? "Vorn Voice is ready." : "Finish setup to start dictating.")
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setStatus({ tone: "danger", text: errorToMessage(error) });
+        }
+      }
     };
 
     void bootstrap();
 
-    const unsubState = voicebar.onStateChanged((snapshot) => {
-      if (!mounted) {
+    const unsubscribeState = voicebar.onStateChanged((nextSnapshot) => {
+      if (cancelled) {
         return;
       }
 
-      if (!isDirtyRef.current) {
-        setDraft(snapshot.settings);
-      }
-
-      if (snapshot.errorMessage) {
-        updateStatus(setStatus, snapshot.errorMessage, "danger");
-      }
-
-      applySampleToStats(snapshot.lastSpeechSample, setSpeechStats);
+      setSnapshot(nextSnapshot);
+      draftRef.current = saving ? draftRef.current : nextSnapshot.settings;
+      lastSavedSignatureRef.current = settingsSignature(nextSnapshot.settings);
+      skipAutosaveRef.current = true;
+      setDraft((currentDraft) => (saving ? currentDraft : nextSnapshot.settings));
     });
 
-    const unsubHotkey = voicebar.onHotkeyCaptured((shortcut) => {
-      if (!mounted || !recordingRef.current) {
+    const unsubscribeCaptured = voicebar.onHotkeyCaptured((shortcut) => {
+      if (cancelled) {
         return;
       }
 
-      setRecordingHotkey(false);
-      const validationError = validateShortcut(shortcut);
-      if (validationError) {
-        updateStatus(setStatus, validationError, "danger");
-        return;
-      }
-
-      setDraft((prev) => ({ ...prev, shortcut }));
-      setIsDirty(true);
-      updateStatus(setStatus, `Hotkey set to ${formatShortcut(shortcut)}. Save to apply.`, "success");
+      setCapturePending(false);
+      updateDraft((current) => ({ ...current, shortcut }), { immediateSave: windowMode === "settings" });
+      setStatus({ tone: "success", text: `Hotkey updated to ${shortcut.display ?? "your new shortcut"}.` });
     });
 
-    const unsubProgress = voicebar.onModelDownloadProgress(({ modelId, percent }) => {
-      if (!mounted) {
+    const unsubscribeUpdateState = voicebar.onUpdateStateChanged((nextUpdateState) => {
+      if (cancelled) {
         return;
       }
 
-      setDownloadProgress((prev) => ({ ...prev, [modelId]: percent }));
+      setUpdateState(nextUpdateState);
     });
+
+    const refreshOnFocus = () => {
+      void refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, false);
+    };
+
+    window.addEventListener("focus", refreshOnFocus);
 
     return () => {
-      mounted = false;
-      unsubState();
-      unsubHotkey();
-      unsubProgress();
-
-      if (recordingRef.current) {
-        void voicebar.cancelHotkeyCapture();
+      cancelled = true;
+      unsubscribeState();
+      unsubscribeCaptured();
+      unsubscribeUpdateState();
+      window.removeEventListener("focus", refreshOnFocus);
+      clearAutosaveTimer();
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      if (capturePending) {
+        void voicebar.cancelHotkeyCapture().catch(() => undefined);
       }
     };
-  }, [voicebar]);
+  }, [voicebar, saving, capturePending]);
 
-  const activeModelInstalled = useMemo(
-    () => models.some((model) => model.id === draft.activeModelId && model.installed),
-    [models, draft.activeModelId]
-  );
-  const installedModels = useMemo(() => models.filter((model) => model.installed), [models]);
-  const averageSpeechWpm = useMemo(() => averageWpm(speechStats), [speechStats]);
-  const weeklyWords = useMemo(() => wordsThisWeek(speechStats), [speechStats]);
-  const runtimeReady = Boolean(speechRuntime?.whisperCliFound);
-  const permissionsReady = accessibilityGranted === true;
-  const installedModelCount = installedModels.length;
-  const readinessChecks = [
-    onboarding.completed,
-    runtimeReady,
-    permissionsReady,
-    installedModelCount > 0,
-    activeModelInstalled
-  ];
-  const readinessScore = readinessChecks.filter(Boolean).length;
-  const readinessRatio = Math.round((readinessScore / readinessChecks.length) * 100);
-  const inOnboarding = windowMode === "onboarding";
-  const onboardingLastStep = ONBOARDING_STEPS.length - 1;
-  const currentSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) ?? SETTINGS_SECTIONS[0];
-  const focusStatus = buildFocusStatus({
-    inOnboarding,
-    status,
-    isDirty,
-    runtimeReady,
-    permissionsReady,
-    installedModelCount,
-    activeModelInstalled,
-    recordingHotkey
-  });
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
-  const saveDraft = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return false;
+  useEffect(() => {
+    if (windowMode !== "settings" || !draft) {
+      return;
     }
 
-    setIsSaving(true);
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return;
+    }
+
+    const draftSignature = settingsSignature(draft);
+    if (draftSignature === lastSavedSignatureRef.current) {
+      return;
+    }
+
+    clearAutosaveTimer();
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void requestSaveRef.current(draft, { toastText: "Changes saved" });
+    }, nextAutosaveDelayRef.current);
+
+    return clearAutosaveTimer;
+  }, [draft, windowMode]);
+
+  if (!voicebar) {
+    return <Shell><EmptyState title="Settings unavailable" text="Restart Vorn Voice to reload the settings window." /></Shell>;
+  }
+
+  if (!ready || !draft || !onboarding) {
+    return <Shell><EmptyState title="Loading Vorn Voice" text={status.text} /></Shell>;
+  }
+
+  const requestSave = async (
+    nextSettings: AppSettings,
+    options: { statusText?: string; toastText?: string } = {}
+  ): Promise<boolean> => {
+    const saveSignature = settingsSignature(nextSettings);
+
+    clearAutosaveTimer();
+    setSaving(true);
+    draftRef.current = nextSettings;
+    setDraft(nextSettings);
+
     try {
-      if (!activeModelInstalled && models.length > 0) {
-        throw new Error("Select an installed model before saving");
-      }
+      const nextSnapshot = await withTimeout(voicebar.saveSettings(nextSettings), 6000, "Save settings");
+      const currentSignature = draftRef.current ? settingsSignature(draftRef.current) : saveSignature;
+      const savedSignature = settingsSignature(nextSnapshot.settings);
 
-      if (recordingRef.current) {
-        await voicebar.cancelHotkeyCapture();
-        setRecordingHotkey(false);
+      lastSavedSignatureRef.current = savedSignature;
+      setSnapshot(nextSnapshot);
+      if (currentSignature === saveSignature) {
+        draftRef.current = nextSnapshot.settings;
+        skipAutosaveRef.current = true;
+        setDraft(nextSnapshot.settings);
       }
-
-      const updated = await withTimeout(voicebar.saveSettings(draft), CRITICAL_IPC_TIMEOUT_MS, "Save settings");
-      setDraft(updated.settings);
-      setIsDirty(false);
-      updateStatus(setStatus, "Settings saved", "success");
+      if (options.statusText) {
+        setStatus({ tone: "success", text: options.statusText });
+      }
+      if (options.toastText) {
+        showToast({ tone: "success", text: options.toastText });
+      }
+      await refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, false);
       return true;
     } catch (error) {
-      updateStatus(setStatus, `Save failed: ${errorToMessage(error)}`, "danger");
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+      if (options.toastText) {
+        showToast({ tone: "danger", text: "Could not save changes." });
+      }
       return false;
     } finally {
-      setIsSaving(false);
+      setSaving(false);
     }
   };
 
-  const toggleCapture = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
+  requestSaveRef.current = requestSave;
+
+  const saveCurrentDraft = async (successText?: string) => {
+    if (!draft) {
+      return false;
     }
 
-    if (recordingRef.current) {
-      await voicebar.cancelHotkeyCapture();
-      setRecordingHotkey(false);
-      updateStatus(setStatus, "Hotkey capture cancelled", "neutral");
-      return;
-    }
+    return requestSave(draft, { statusText: successText ?? "Saved your settings." });
+  };
 
-    setRecordingHotkey(true);
-    updateStatus(setStatus, "Press your new shortcut now", "neutral");
+  const beginHotkeyCapture = async () => {
+    setCapturePending(true);
 
     try {
       await voicebar.startHotkeyCapture();
+      setStatus({ tone: "neutral", text: "Press the shortcut you want to use." });
     } catch (error) {
-      setRecordingHotkey(false);
-      updateStatus(setStatus, `Hotkey capture failed: ${errorToMessage(error)}`, "danger");
+      setCapturePending(false);
+      setStatus({ tone: "danger", text: errorToMessage(error) });
     }
   };
 
-  const downloadModel = async (modelId: string, name: string) => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
+  const cancelHotkeyCapture = async () => {
+    setCapturePending(false);
+    try {
+      await voicebar.cancelHotkeyCapture();
+    } catch {
+      // ignore
     }
+  };
 
-    setDownloadProgress((prev) => ({ ...prev, [modelId]: 0 }));
+  const installRuntime = async () => {
+    setInstallingRuntime(true);
 
     try {
-      await voicebar.downloadModel(modelId);
-      const listedModels = await voicebar.listModels();
-      setModels(listedModels);
-      updateStatus(setStatus, `${name} is ready to use`, "success");
-      setDownloadProgress((prev) => ({ ...prev, [modelId]: 100 }));
-    } catch (error) {
-      updateStatus(setStatus, `Download failed: ${errorToMessage(error)}`, "danger");
-      setDownloadProgress((prev) => {
-        const next = { ...prev };
-        delete next[modelId];
-        return next;
+      const diagnostics = await withTimeout(voicebar.installSpeechRuntime(), 120000, "Install runtime");
+      setRuntimeState(diagnostics);
+      setStatus({
+        tone: diagnostics.whisperCliFound ? "success" : "warning",
+        text: diagnostics.whisperCliFound ? "Speech runtime is ready." : "Runtime install finished, but Vorn still cannot find whisper-cli."
       });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    } finally {
+      setInstallingRuntime(false);
     }
   };
 
-  const removeModel = async (modelId: string, name: string) => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
-
+  const requestMicrophone = async () => {
     try {
-      await voicebar.removeModel(modelId);
-      const listedModels = await voicebar.listModels();
-      setModels(listedModels);
-      updateStatus(setStatus, `${name} removed`, "neutral");
-
-      if (draft.activeModelId === modelId) {
-        const fallback = listedModels.find((model) => model.installed)?.id ?? listedModels[0]?.id ?? DEFAULT_SETTINGS.activeModelId;
-        setDraft((prev) => ({ ...prev, activeModelId: fallback }));
-        setIsDirty(true);
-      }
+      const granted = await voicebar.requestMicrophonePermission();
+      await refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, false);
+      setStatus({
+        tone: granted ? "success" : "warning",
+        text: granted ? "Microphone access granted." : "Microphone access is still off. Enable it in System Settings if you want hands-free dictation."
+      });
     } catch (error) {
-      updateStatus(setStatus, `Remove failed: ${errorToMessage(error)}`, "danger");
+      setStatus({ tone: "danger", text: errorToMessage(error) });
     }
   };
 
   const refreshChecks = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
-
-    updateStatus(setStatus, "Refreshing runtime and permission checks...", "neutral");
-    try {
-      const [critical, background] = await Promise.all([loadCriticalSettingsData(voicebar), loadNonCriticalSettingsData(voicebar)]);
-
-      setModels(critical.listedModels);
-      if (background.permission) {
-        setAccessibilityGranted(background.permission.accessibility);
-      }
-      if (background.runtime) {
-        setSpeechRuntime(background.runtime);
-      }
-
-      const warnings = [...critical.warnings, ...background.errors];
-      updateStatus(setStatus, warnings.length > 0 ? `Loaded with warnings: ${warnings.join("; ")}` : "Checks refreshed", warnings.length > 0 ? "warning" : "success");
-    } catch (error) {
-      updateStatus(setStatus, `Refresh failed: ${errorToMessage(error)}`, "danger");
-    }
+    await refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, true);
   };
 
-  const installSpeechRuntime = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
-
-    setIsInstallingRuntime(true);
-    updateStatus(setStatus, "Installing Whisper runtime...", "neutral");
+  const checkForUpdates = async () => {
+    setCheckingForUpdates(true);
 
     try {
-      const runtime = await voicebar.installSpeechRuntime();
-      setSpeechRuntime(runtime);
-      if (runtime.whisperCliFound) {
-        updateStatus(setStatus, `Whisper runtime ready: ${runtime.whisperCliPath ?? "detected path"}`, "success");
-      } else {
-        updateStatus(setStatus, "Whisper runtime is still unavailable.", "warning");
-      }
+      const nextUpdateState = await withTimeout(voicebar.checkForUpdatesManual(), 15000, "Check for updates");
+      setUpdateState(nextUpdateState);
+      setStatus({ tone: "neutral", text: nextUpdateState.label });
     } catch (error) {
-      updateStatus(setStatus, `Runtime install failed: ${errorToMessage(error)}`, "danger");
+      setStatus({ tone: "danger", text: errorToMessage(error) });
     } finally {
-      setIsInstallingRuntime(false);
+      setCheckingForUpdates(false);
     }
   };
 
-  const openPrivacySettings = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
+  const installUpdate = async () => {
+    setInstallingUpdate(true);
 
-    await voicebar.openPrivacySettings();
-    updateStatus(setStatus, "Opened Privacy Settings", "neutral");
-  };
-
-  const startOnboardingAgain = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
-
-    const reset = await voicebar.resetOnboarding();
-    setOnboarding(reset);
-    setOnboardingStep(0);
-    setWindowMode("onboarding");
-    updateStatus(setStatus, "Onboarding restarted", "neutral");
-  };
-
-  const finishOnboarding = async () => {
-    if (!voicebar) {
-      updateStatus(setStatus, PRELOAD_ERROR_MESSAGE, "danger");
-      return;
-    }
-
-    setIsCompletingOnboarding(true);
     try {
-      const saved = await saveDraft();
-      if (!saved) {
+      const installStarted = await withTimeout(voicebar.installDownloadedUpdate(), 5000, "Install update");
+      if (!installStarted) {
+        setStatus({ tone: "warning", text: "No downloaded update is ready to install yet." });
         return;
       }
 
-      const completed = await voicebar.completeOnboarding({ selectedModelId: draft.activeModelId });
-      setOnboarding(completed);
-      setWindowMode("settings");
-      setActiveSection("overview");
-      updateStatus(setStatus, "Onboarding complete. You are ready to dictate.", "success");
+      setStatus({ tone: "neutral", text: "Restarting app to install update..." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
     } finally {
-      setIsCompletingOnboarding(false);
+      setInstallingUpdate(false);
     }
   };
 
-  const resetSpeechStats = () => {
-    const empty = parseSpeechStats(null);
-    setSpeechStats(empty);
-    persistSpeechStats(empty);
-    updateStatus(setStatus, "Speech stats reset", "neutral");
+  const openPrivacy = async (pane: "accessibility" | "microphone") => {
+    try {
+      await voicebar.openPrivacySettings(pane);
+      setStatus({ tone: "neutral", text: "System Settings opened. After changing access, come back here and click Refresh checks." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    }
   };
 
-  const updateThemePreference = (next: ThemePreference) => {
-    setThemePreference(next);
-    persistThemePreference(next);
-  };
+  const updateDraft = (recipe: (current: AppSettings) => AppSettings, options: DraftUpdateOptions = {}) => {
+    let nextDraft: AppSettings | null = null;
 
-  const pageHeader = inOnboarding
-    ? {
-        eyebrow: `Setup step ${onboardingStep + 1} of ${ONBOARDING_STEPS.length}`,
-        title: ONBOARDING_STEPS[onboardingStep],
-        description: onboardingDescriptions[onboardingStep],
-        badge: `${readinessRatio}% ready`
+    setDraft((current) => {
+      if (!current) {
+        return current;
       }
-    : {
-        eyebrow: "Vorn Voice workspace",
-        title: currentSection.label,
-        description: currentSection.description,
-        badge: isDirty ? "Unsaved changes" : status.tone === "success" ? "In sync" : "Stable"
-      };
+
+      const updated = recipe(current);
+      if (settingsSignature(updated) === settingsSignature(current)) {
+        return current;
+      }
+
+      nextDraft = updated;
+      draftRef.current = updated;
+      return updated;
+    });
+
+    if (nextDraft && windowMode === "settings") {
+      skipAutosaveRef.current = false;
+      nextAutosaveDelayRef.current = options.immediateSave ? 0 : AUTOSAVE_DELAY_MS;
+    }
+  };
+
+  const downloadModel = async (modelId: string) => {
+    setDownloadModelId(modelId);
+    try {
+      await voicebar.downloadModel(modelId);
+      const listedModels = await voicebar.listModels();
+      setModels(listedModels);
+      setStatus({ tone: "success", text: "Model installed. Select it when you are ready to use it." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    } finally {
+      setDownloadModelId(null);
+    }
+  };
+
+  const removeModel = async (modelId: string) => {
+    setRemovingModelId(modelId);
+    try {
+      await voicebar.removeModel(modelId);
+      const listedModels = await voicebar.listModels();
+      setModels(listedModels);
+
+      if (draft.activeModelId === modelId) {
+        const fallback = listedModels.find((model) => model.installed);
+        if (fallback) {
+          const nextSettings = { ...draft, activeModelId: fallback.id };
+          await requestSave(nextSettings, { statusText: "Updated your default model.", toastText: "Changes saved" });
+        } else {
+          setStatus({ tone: "warning", text: "Model removed. Install another model before dictation can run." });
+          return;
+        }
+      }
+
+      setStatus({ tone: "success", text: "Model removed." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    } finally {
+      setRemovingModelId(null);
+    }
+  };
+
+  const finishOnboarding = async () => {
+    if (!setupReady) {
+      setStatus({ tone: "warning", text: "Finish the setup checklist before continuing." });
+      return;
+    }
+
+    setCompletingOnboarding(true);
+    try {
+      await saveCurrentDraft("Saved your setup.");
+      const nextOnboarding = await voicebar.completeOnboarding({ selectedModelId: draft.activeModelId });
+      setOnboarding(nextOnboarding);
+      setWindowMode("settings");
+      setStatus({ tone: "success", text: "Setup complete. You can start dictating now." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    } finally {
+      setCompletingOnboarding(false);
+    }
+  };
+
+  const resetOnboarding = async () => {
+    try {
+      const nextOnboarding = await voicebar.resetOnboarding();
+      setOnboarding(nextOnboarding);
+      setWindowMode("onboarding");
+      setOnboardingStep(0);
+      setStatus({ tone: "neutral", text: "Setup restarted." });
+    } catch (error) {
+      setStatus({ tone: "danger", text: errorToMessage(error) });
+    }
+  };
 
   return (
-    <div className="workspace">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <p className="brand-eyebrow">Vorn Voice</p>
-          <h1>Control Center</h1>
-          <p className="brand-copy">A native-feeling dictation workspace for model setup, runtime trust, and fast daily adjustments.</p>
-        </div>
+    <Shell>
+      <div className="grid w-full max-w-[1380px] items-start gap-4 p-3 md:gap-6 md:p-6 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="top-6 flex max-h-none flex-col gap-4 overflow-visible rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:sticky md:max-h-[calc(100vh-48px)] md:overflow-auto md:p-7">
+          <div className="flex flex-col gap-2.5">
+            <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Vorn Voice</span>
+            <h1 className="text-3xl leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
+            <p className="m-0 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
+              {windowMode === "onboarding"
+                ? "Work through the essentials once, then Vorn can stay quietly in your menu bar."
+                : "Everything you change often stays near the top, with checks and troubleshooting a little farther down."}
+            </p>
+          </div>
 
-        <div className="sidebar-summary">
-          <div className="summary-meter">
+          <Card className={cn(CARD_BASE_CLASS, "p-4")}> 
+            <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
+            <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
+            <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
+            <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
+            <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
+          </Card>
+
+          {windowMode === "onboarding" ? (
+            <Card className={cn(CARD_BASE_CLASS, "p-4")}>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Setup steps</span>
+              <div className="mt-3 flex flex-col gap-3">
+                {ONBOARDING_STEPS.map((step, index) => (
+                  <button
+                    key={step}
+                    className={cn(
+                      "flex items-center gap-3 rounded-2xl border border-transparent bg-[rgb(var(--muted))] px-3.5 py-3 text-left text-sm text-[rgb(var(--muted-foreground))] transition-colors",
+                      index === onboardingStep && "border-[rgb(var(--border))] bg-[#1b1b1b] text-[rgb(var(--foreground))]"
+                    )}
+                    onClick={() => setOnboardingStep(index)}
+                    type="button"
+                  >
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#2f2f2f] bg-[#1b1b1b] text-xs text-[rgb(var(--foreground))]">{index + 1}</span>
+                    <strong>{step}</strong>
+                  </button>
+                ))}
+              </div>
+            </Card>
+          ) : (
+            <Card className={cn(CARD_BASE_CLASS, "p-4")}>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">What matters most</span>
+              <p className="mt-3 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">Tune your model and dictation preferences here. Vorn saves changes automatically as you go.</p>
+              <div className="mt-3 flex flex-col gap-3">
+                <Button variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
+                <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" variant="outline" onClick={() => void resetOnboarding()} type="button">Run setup again</Button>
+              </div>
+            </Card>
+          )}
+        </aside>
+
+        <main className="flex flex-col gap-5 pb-6 pt-0 md:pb-6 md:pt-2">
+          {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
+          <Card className="rounded-2xl border-[#2f2f2f] bg-[#151515]">
+            <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <span className="summary-label">Readiness</span>
-              <strong>{readinessRatio}%</strong>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Status</span>
+              <h2 className="mt-2 text-3xl tracking-tight">{setupReady ? "Ready to dictate" : "A few things still need attention"}</h2>
+              <p className="mt-1 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">{status.text}</p>
             </div>
-            <div className="summary-progress" aria-hidden="true">
-              <span style={{ width: `${readinessRatio}%` }} />
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", status.tone === "success" ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-200" : status.tone === "warning" ? "border-amber-500/40 bg-amber-950/40 text-amber-200" : status.tone === "danger" ? "border-red-500/40 bg-red-950/40 text-red-200" : "border-[rgb(var(--border))] bg-[#111111] text-[rgb(var(--muted-foreground))]" )} variant="outline">
+                {status.tone === "success" ? "Healthy" : status.tone === "warning" ? "Needs review" : status.tone === "danger" ? "Issue" : "Checking"}
+              </Badge>
+              <Button variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
             </div>
-          </div>
+            </CardHeader>
+          </Card>
 
-          <div className="sidebar-status-list">
-            <StatusKey label="Model" tone={installedModelCount > 0 ? "ready" : "attention"} value={installedModelCount > 0 ? `${installedModelCount} installed` : "Install one"} />
-            <StatusKey label="Runtime" tone={runtimeReady ? "ready" : "attention"} value={runtimeReady ? "Ready" : "Needs install"} />
-            <StatusKey label="Access" tone={accessibilityGranted === null ? "pending" : permissionsReady ? "ready" : "attention"} value={accessibilityGranted === null ? "Checking" : permissionsReady ? "Granted" : "Review"} />
-            <StatusKey label="Hotkey" tone={recordingHotkey ? "pending" : "ready"} value={recordingHotkey ? "Recording" : formatShortcut(draft.shortcut)} />
-          </div>
+          {windowMode === "onboarding" ? (
+            <OnboardingView
+              accessibilityReady={accessibilityReady}
+              activeModelId={draft.activeModelId}
+              activeModelInstalled={activeModelInstalled}
+              beginHotkeyCapture={beginHotkeyCapture}
+              cancelHotkeyCapture={cancelHotkeyCapture}
+              capturePending={capturePending}
+              completeDisabled={!setupReady || completingOnboarding || saving}
+              completingOnboarding={completingOnboarding}
+              draft={draft}
+              downloadModel={downloadModel}
+              downloadModelId={downloadModelId}
+              hotkeyReady={hotkeyReady}
+              installRuntime={installRuntime}
+              installingRuntime={installingRuntime}
+              microphoneGranted={microphoneGranted}
+              models={models}
+              onboardingStep={onboardingStep}
+              openPrivacy={openPrivacy}
+              permissionState={permissionState}
+              removeModel={removeModel}
+              removingModelId={removingModelId}
+              requestMicrophone={requestMicrophone}
+              runtimeReady={runtimeReady}
+              saveCurrentDraft={saveCurrentDraft}
+              setDraft={updateDraft}
+              setOnboardingStep={setOnboardingStep}
+              setupReady={setupReady}
+              finishOnboarding={finishOnboarding}
+            />
+          ) : (
+            <SettingsView
+              accessibilityReady={accessibilityReady}
+              activeModel={activeModel}
+              activeModelInstalled={activeModelInstalled}
+              appVersion={appVersion}
+              beginHotkeyCapture={beginHotkeyCapture}
+              cancelHotkeyCapture={cancelHotkeyCapture}
+              capturePending={capturePending}
+              checkForUpdates={checkForUpdates}
+              checkingForUpdates={checkingForUpdates}
+              downloadModel={downloadModel}
+              downloadModelId={downloadModelId}
+              draft={draft}
+              hotkeyReady={hotkeyReady}
+              installRuntime={installRuntime}
+              installUpdate={installUpdate}
+              installingUpdate={installingUpdate}
+              installingRuntime={installingRuntime}
+              microphoneGranted={microphoneGranted}
+              models={models}
+              openPrivacy={openPrivacy}
+              permissionState={permissionState}
+              removeModel={removeModel}
+              removingModelId={removingModelId}
+              requestMicrophone={requestMicrophone}
+              resetOnboarding={resetOnboarding}
+              runtimeReady={runtimeReady}
+              runtimeState={runtimeState}
+              snapshot={snapshot!}
+              setDraft={updateDraft}
+              updateState={updateState}
+            />
+          )}
+        </main>
+      </div>
+    </Shell>
+  );
+}
 
-          <div className="theme-toggle" role="group" aria-label="Theme mode">
-            <button
-              className={themePreference === "light" ? "theme-chip active" : "theme-chip"}
-              onClick={() => updateThemePreference("light")}
-              type="button"
-            >
-              Light
-            </button>
-            <button
-              className={themePreference === "dark" ? "theme-chip active" : "theme-chip"}
-              onClick={() => updateThemePreference("dark")}
-              type="button"
-            >
-              Dark
-            </button>
-            <button
-              className={themePreference === "system" ? "theme-chip active" : "theme-chip"}
-              onClick={() => updateThemePreference("system")}
-              type="button"
-            >
-              System
-            </button>
-          </div>
-        </div>
+type OnboardingViewProps = {
+  accessibilityReady: boolean;
+  activeModelId: string;
+  activeModelInstalled: boolean;
+  beginHotkeyCapture: () => Promise<void>;
+  cancelHotkeyCapture: () => Promise<void>;
+  capturePending: boolean;
+  completeDisabled: boolean;
+  completingOnboarding: boolean;
+  draft: AppSettings;
+  downloadModel: (modelId: string) => Promise<void>;
+  downloadModelId: string | null;
+  finishOnboarding: () => Promise<void>;
+  hotkeyReady: boolean;
+  installRuntime: () => Promise<void>;
+  installingRuntime: boolean;
+  microphoneGranted: boolean;
+  models: ModelListItem[];
+  onboardingStep: number;
+  openPrivacy: (pane: "accessibility" | "microphone") => Promise<void>;
+  permissionState: PermissionsSnapshot | null;
+  removeModel: (modelId: string) => Promise<void>;
+  removingModelId: string | null;
+  requestMicrophone: () => Promise<void>;
+  runtimeReady: boolean;
+  saveCurrentDraft: (successText?: string) => Promise<boolean>;
+  setDraft: (recipe: (current: AppSettings) => AppSettings) => void;
+  setOnboardingStep: (step: number) => void;
+  setupReady: boolean;
+};
 
-        {inOnboarding ? (
-          <nav className="stepper" aria-label="Onboarding steps">
-            {ONBOARDING_STEPS.map((step, index) => (
-              <button
-                key={step}
-                className={index === onboardingStep ? "step active" : index < onboardingStep ? "step done" : "step"}
-                onClick={() => setOnboardingStep(index)}
-                type="button"
-              >
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{step}</strong>
-                  <small>{onboardingDescriptions[index]}</small>
-                </div>
-              </button>
-            ))}
-          </nav>
+function OnboardingView(props: OnboardingViewProps): ReactElement {
+  const {
+    accessibilityReady,
+    activeModelId,
+    activeModelInstalled,
+    beginHotkeyCapture,
+    cancelHotkeyCapture,
+    capturePending,
+    completeDisabled,
+    completingOnboarding,
+    draft,
+    downloadModel,
+    downloadModelId,
+    finishOnboarding,
+    hotkeyReady,
+    installRuntime,
+    installingRuntime,
+    microphoneGranted,
+    models,
+    onboardingStep,
+    openPrivacy,
+    permissionState,
+    removeModel,
+    removingModelId,
+    requestMicrophone,
+    runtimeReady,
+    saveCurrentDraft,
+    setDraft,
+    setOnboardingStep,
+    setupReady
+  } = props;
+
+  const nextStep = async () => {
+    await saveCurrentDraft("Saved this step.");
+    setOnboardingStep(Math.min(onboardingStep + 1, ONBOARDING_STEPS.length - 1));
+  };
+
+  const previousStep = () => {
+    setOnboardingStep(Math.max(onboardingStep - 1, 0));
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      {onboardingStep === 0 ? (
+        <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+          <SectionHeading title="Choose your model" text="Pick one installed model. Small English is the best bundled default if you want better quality." />
+          <ModelPanel
+            activeModelId={activeModelId}
+            downloadModel={downloadModel}
+            downloadModelId={downloadModelId}
+            models={models}
+            onSelect={(modelId) => setDraft((current) => ({ ...current, activeModelId: modelId }))}
+            removeModel={removeModel}
+            removingModelId={removingModelId}
+          />
+        </Card>
+      ) : null}
+
+      {onboardingStep === 1 ? (
+        <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+          <SectionHeading title="Enable access" text="Vorn needs the speech runtime, microphone access, and optional Accessibility for auto-paste." />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CheckCard
+              action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>}
+              detail="Runs locally on your Mac. No cloud setup required."
+              ready={runtimeReady}
+              title="Speech runtime"
+            />
+            <CheckCard
+              action={<Button variant="outline" onClick={() => void requestMicrophone()} type="button">{microphoneGranted ? "Check again" : "Allow microphone"}</Button>}
+              detail="Needed to record your voice before transcription begins."
+              ready={microphoneGranted}
+              title="Microphone"
+            />
+            <CheckCard
+              action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined}
+              detail={draft.autoPaste ? "Needed only if you want Vorn to paste into other apps for you." : "You are using manual paste, so this can stay off."}
+              ready={accessibilityReady}
+              title="Accessibility"
+            />
+            <CheckCard
+              detail={permissionState?.hotkeyMessage ?? "Lets Vorn listen for your global shortcut and stop dictation when you release it."}
+              ready={hotkeyReady}
+              title="Hotkey monitoring"
+            />
+          </div>
+          {!microphoneGranted ? (
+            <p className="mt-3 text-sm text-[rgb(var(--muted-foreground))]">If macOS already asked once and you denied it, use <button className="bg-transparent p-0 text-[rgb(var(--accent))] underline decoration-[rgb(var(--accent))]/60 underline-offset-2" onClick={() => void openPrivacy("microphone")} type="button">Microphone Settings</button> to turn it back on.</p>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {onboardingStep === 2 ? (
+        <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+          <SectionHeading title="Pick how dictation feels" text="Choose the shortcut and decide whether Vorn pastes automatically or leaves text on your clipboard." />
+          <HotkeyPanel capturePending={capturePending} onBegin={beginHotkeyCapture} onCancel={cancelHotkeyCapture} shortcut={draft.shortcut} />
+          <div className="flex flex-col gap-3">
+            <ToggleRow
+              checked={draft.autoPaste}
+              detail="Paste into the frontmost app after transcription finishes."
+              label="Auto-paste into my active app"
+              onChange={(checked) => setDraft((current) => ({ ...current, autoPaste: checked }))}
+            />
+            <ToggleRow
+              checked={draft.restoreClipboard}
+              detail="Put your clipboard back after pasting so you do not lose what you copied earlier."
+              label="Restore clipboard after paste"
+              onChange={(checked) => setDraft((current) => ({ ...current, restoreClipboard: checked }))}
+            />
+          </div>
+        </Card>
+      ) : null}
+
+      {onboardingStep === 3 ? (
+        <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+          <SectionHeading title="Finish setup" text="You only need the basics. Everything else can live in Advanced later." />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CheckCard detail={activeModelInstalled ? `Selected model: ${draft.activeModelId}` : "Choose and install a model."} ready={activeModelInstalled} title="Model ready" />
+            <CheckCard detail={runtimeReady ? "whisper-cli detected." : "Install the local speech runtime."} ready={runtimeReady} title="Runtime ready" />
+            <CheckCard detail={microphoneGranted ? "Microphone access granted." : "Microphone access still missing."} ready={microphoneGranted} title="Microphone ready" />
+            <CheckCard detail={draft.autoPaste ? (accessibilityReady ? "Accessibility is ready for auto-paste." : "Accessibility is still needed for auto-paste.") : "Accessibility is optional because auto-paste is off."} ready={accessibilityReady} title="Paste behavior" />
+          </div>
+          <div className={cn("mt-3 flex flex-col gap-2", SUB_PANEL_CLASS)}>
+            <strong>What happens next</strong>
+            <p className="text-sm text-[rgb(var(--muted-foreground))]">After this, Vorn can stay in your menu bar. If anything stops working, you can reopen this window from the menu bar icon.</p>
+          </div>
+        </Card>
+      ) : null}
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" disabled={onboardingStep === 0} variant="outline" onClick={previousStep} type="button">Back</Button>
+        {onboardingStep < ONBOARDING_STEPS.length - 1 ? (
+          <Button onClick={() => void nextStep()} type="button">Continue</Button>
         ) : (
-          <nav className="section-nav" aria-label="Settings sections">
-            {SETTINGS_SECTIONS.map((section) => (
-              <button
-                key={section.id}
-                className={activeSection === section.id ? "section-link active" : "section-link"}
-                onClick={() => setActiveSection(section.id)}
-                type="button"
-              >
-                <span>{section.label}</span>
-                <small>{section.description}</small>
-              </button>
-            ))}
-          </nav>
+          <Button disabled={completeDisabled} onClick={() => void finishOnboarding()} type="button">
+            {completingOnboarding ? "Finishing..." : "Finish setup"}
+          </Button>
         )}
-      </aside>
-
-      <main className="content">
-        <div className="content-scroll">
-          <section className="page-hero panel-shell">
-            <div>
-              <p className="panel-eyebrow">{pageHeader.eyebrow}</p>
-              <h2>{pageHeader.title}</h2>
-              <p>{pageHeader.description}</p>
-            </div>
-            <div className="hero-meta">
-              <span className={statusChipClass(status.tone)}>{pageHeader.badge}</span>
-              <small>{focusStatus}</small>
-            </div>
-          </section>
-
-          {inOnboarding ? (
-            renderOnboardingStep({
-              onboardingStep,
-              draft,
-              models,
-              installedModels,
-              activeModelInstalled,
-              downloadProgress,
-              speechRuntime,
-              accessibilityGranted,
-              recordingHotkey,
-              isInstallingRuntime,
-              status,
-              toggleCapture,
-              installSpeechRuntime,
-              openPrivacySettings,
-              setDraft,
-              setIsDirty,
-              downloadModel,
-              removeModel
-            })
-          ) : (
-            renderSettingsSection({
-              section: activeSection,
-              draft,
-              models,
-              installedModels,
-              activeModelInstalled,
-              downloadProgress,
-              speechRuntime,
-              accessibilityGranted,
-              recordingHotkey,
-              onboarding,
-              averageSpeechWpm,
-              weeklyWords,
-              speechStats,
-              readinessRatio,
-              isInstallingRuntime,
-              status,
-              toggleCapture,
-              installSpeechRuntime,
-              openPrivacySettings,
-              startOnboardingAgain,
-              resetSpeechStats,
-              setDraft,
-              setIsDirty,
-              downloadModel,
-              removeModel
-            })
-          )}
-        </div>
-
-        <footer className="footer">
-          <div className={`status-banner tone-${status.tone}`}>
-            <strong>{footerHeading(status.tone)}</strong>
-            <p>{status.text}</p>
-          </div>
-          {inOnboarding ? (
-            <div className="footer-actions">
-              <button disabled={onboardingStep === 0} onClick={() => setOnboardingStep((step) => Math.max(0, step - 1))} type="button">
-                Back
-              </button>
-              {onboardingStep < onboardingLastStep ? (
-                <button className="primary" onClick={() => setOnboardingStep((step) => Math.min(onboardingLastStep, step + 1))} type="button">
-                  Continue
-                </button>
-              ) : (
-                <button className="primary" disabled={isCompletingOnboarding || isSaving} onClick={() => void finishOnboarding()} type="button">
-                  {isCompletingOnboarding ? "Finalizing..." : "Finish Setup"}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="footer-actions">
-              <button onClick={() => void refreshChecks()} type="button">
-                Refresh Checks
-              </button>
-              <button className="primary" disabled={!isDirty || isSaving} onClick={() => void saveDraft()} type="button">
-                {isSaving ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          )}
-        </footer>
-      </main>
+      </footer>
+      {!setupReady ? <p className="text-sm text-[rgb(var(--muted-foreground))]">Vorn will keep guiding you here until setup is complete.</p> : null}
     </div>
   );
 }
 
-type OnboardingRenderArgs = {
-  onboardingStep: number;
-  draft: AppSettings;
-  models: ModelRow[];
-  installedModels: ModelRow[];
+type SettingsViewProps = {
+  accessibilityReady: boolean;
+  activeModel: ModelListItem | undefined;
   activeModelInstalled: boolean;
-  downloadProgress: Record<string, number>;
-  speechRuntime: SpeechRuntimeDiagnostics | null;
-  accessibilityGranted: boolean | null;
-  recordingHotkey: boolean;
-  isInstallingRuntime: boolean;
-  status: StatusMessage;
-  toggleCapture: () => Promise<void>;
-  installSpeechRuntime: () => Promise<void>;
-  openPrivacySettings: () => Promise<void>;
-  setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
-  setIsDirty: React.Dispatch<React.SetStateAction<boolean>>;
-  downloadModel: (modelId: string, name: string) => Promise<void>;
-  removeModel: (modelId: string, name: string) => Promise<void>;
+  appVersion: string;
+  beginHotkeyCapture: () => Promise<void>;
+  cancelHotkeyCapture: () => Promise<void>;
+  capturePending: boolean;
+  checkForUpdates: () => Promise<void>;
+  checkingForUpdates: boolean;
+  downloadModel: (modelId: string) => Promise<void>;
+  downloadModelId: string | null;
+  draft: AppSettings;
+  hotkeyReady: boolean;
+  installRuntime: () => Promise<void>;
+  installUpdate: () => Promise<void>;
+  installingUpdate: boolean;
+  installingRuntime: boolean;
+  microphoneGranted: boolean;
+  models: ModelListItem[];
+  openPrivacy: (pane: "accessibility" | "microphone") => Promise<void>;
+  permissionState: PermissionsSnapshot | null;
+  removeModel: (modelId: string) => Promise<void>;
+  removingModelId: string | null;
+  requestMicrophone: () => Promise<void>;
+  resetOnboarding: () => Promise<void>;
+  runtimeReady: boolean;
+  runtimeState: SpeechRuntimeDiagnostics | null;
+  snapshot: AppSnapshot;
+  setDraft: (recipe: (current: AppSettings) => AppSettings) => void;
+  updateState: UpdateStatus | null;
 };
 
-function renderOnboardingStep(args: OnboardingRenderArgs): React.ReactElement {
+function SettingsView(props: SettingsViewProps): ReactElement {
   const {
-    onboardingStep,
-    draft,
-    models,
-    installedModels,
+    accessibilityReady,
+    activeModel,
     activeModelInstalled,
-    downloadProgress,
-    speechRuntime,
-    accessibilityGranted,
-    recordingHotkey,
-    isInstallingRuntime,
-    status,
-    toggleCapture,
-    installSpeechRuntime,
-    openPrivacySettings,
-    setDraft,
-    setIsDirty,
+    appVersion,
+    beginHotkeyCapture,
+    cancelHotkeyCapture,
+    capturePending,
+    checkForUpdates,
+    checkingForUpdates,
     downloadModel,
-    removeModel
-  } = args;
-
-  if (onboardingStep === 0) {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Get comfortable quickly"
-          title="A local dictation flow that stays out of your way"
-          description="Vorn Voice is built around one fast habit: hold to speak, release to transcribe, keep your cursor where you are."
-          aside={<StatusPill tone="ready">Designed for focused work</StatusPill>}
-        >
-          <div className="feature-grid">
-            <FeatureCard title="Press and hold" copy="Use one push-to-talk shortcut instead of switching apps or starting a recording session." />
-            <FeatureCard title="Release to process" copy="Whisper starts transcribing immediately with the model you selected for your machine." />
-            <FeatureCard title="Paste with confidence" copy="Vorn Voice can paste output directly and restore your clipboard if you want a seamless workflow." />
-          </div>
-        </PanelShell>
-
-        <div className="two-column-grid">
-          <PanelShell eyebrow="Before you start" title="Three things to confirm" description="Once these are ready, daily use becomes mostly invisible.">
-            <div className="checklist">
-              <ChecklistRow ready={installedModels.length > 0} label="Download at least one model" detail="Base is the best default for most setups." />
-              <ChecklistRow ready={Boolean(speechRuntime?.whisperCliFound)} label="Install the Whisper runtime" detail="Needed for local transcription." />
-              <ChecklistRow ready={accessibilityGranted === true} label="Grant Accessibility access" detail="Required to paste into your active app." />
-            </div>
-          </PanelShell>
-
-          <PanelShell eyebrow="Live status" title="Current workspace signal" description="You can keep moving through setup now and return later if something still needs attention.">
-            <InlineNotice tone={status.tone} text={status.text} />
-          </PanelShell>
-        </div>
-      </section>
-    );
-  }
-
-  if (onboardingStep === 1) {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Model selection"
-          title="Choose the voice engine that matches your machine"
-          description="Base balances speed and accuracy well. Tiny is quickest, and Small trades speed for cleaner transcripts."
-          aside={<StatusPill tone={installedModels.length > 0 ? "ready" : "attention"}>{installedModels.length > 0 ? `${installedModels.length} installed` : "No models installed"}</StatusPill>}
-        >
-          <ModelManagerPanel
-            draft={draft}
-            models={models}
-            downloadProgress={downloadProgress}
-            installedModels={installedModels}
-            activeModelInstalled={activeModelInstalled}
-            setDraft={setDraft}
-            setIsDirty={setIsDirty}
-            downloadModel={downloadModel}
-            removeModel={removeModel}
-          />
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (onboardingStep === 2) {
-    return (
-      <section className="content-stack">
-        <div className="status-grid">
-          <HealthCard
-            title="Whisper runtime"
-            description={speechRuntime?.whisperCliFound ? speechRuntime.whisperCliPath ?? "Runtime detected" : "Install the local runtime to start transcription."}
-            tone={speechRuntime?.whisperCliFound ? "ready" : "attention"}
-            action={
-              !speechRuntime?.whisperCliFound ? (
-                <button onClick={() => void installSpeechRuntime()} type="button">
-                  {isInstallingRuntime ? "Installing..." : "Install Runtime"}
-                </button>
-              ) : undefined
-            }
-          />
-          <HealthCard
-            title="Accessibility"
-            description={
-              accessibilityGranted === null
-                ? "Checking macOS permissions."
-                : accessibilityGranted
-                  ? "Accessibility access is granted."
-                  : "Grant access so Vorn Voice can paste into your active app."
-            }
-            tone={accessibilityGranted === null ? "pending" : accessibilityGranted ? "ready" : "attention"}
-            action={
-              accessibilityGranted ? undefined : (
-                <button onClick={() => void openPrivacySettings()} type="button">
-                  Open Privacy Settings
-                </button>
-              )
-            }
-          />
-        </div>
-
-        <PanelShell eyebrow="Why this matters" title="Dictation should feel dependable" description="This step removes the two most common reasons a first transcription fails.">
-          <div className="checklist">
-            <ChecklistRow ready={Boolean(speechRuntime?.whisperCliFound)} label="Runtime installed" detail="The local CLI must be available on this Mac." />
-            <ChecklistRow ready={accessibilityGranted === true} label="macOS access granted" detail="Needed only for pasting into other apps." />
-          </div>
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (onboardingStep === 3) {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Push-to-talk"
-          title="Set a shortcut you can use all day"
-          description="Choose something easy to hold, unlikely to collide, and comfortable to repeat hundreds of times."
-          aside={<StatusPill tone={recordingHotkey ? "pending" : "ready"}>{recordingHotkey ? "Listening for keys" : formatShortcut(draft.shortcut)}</StatusPill>}
-        >
-          <HotkeyPanel draft={draft} recordingHotkey={recordingHotkey} toggleCapture={toggleCapture} />
-        </PanelShell>
-
-        <PanelShell eyebrow="Hotkey advice" title="What usually works best" description="Reliable shortcuts are ergonomic and hard to trigger accidentally.">
-          <div className="tip-list">
-            <TipCard title="Prefer modifiers" copy="Combinations with Shift, Command, or Option are easier to reserve for dictation." />
-            <TipCard title="Avoid crowded shortcuts" copy="Stay away from common app commands you already use every few minutes." />
-            <TipCard title="Keep it comfortable" copy="You will hold this key combo while speaking, so comfort matters more than novelty." />
-          </div>
-        </PanelShell>
-      </section>
-    );
-  }
-
-  return (
-    <section className="content-stack">
-      <PanelShell
-        eyebrow="Final review"
-        title="You are almost ready to dictate"
-        description="Check the essentials once, then finish setup. You can fine-tune everything later in the full workspace."
-        aside={<StatusPill tone={installedModels.length > 0 && Boolean(speechRuntime?.whisperCliFound) && accessibilityGranted ? "ready" : "attention"}>{installedModels.length > 0 ? `${installedModels.length} model${installedModels.length === 1 ? "" : "s"}` : "No installed model"}</StatusPill>}
-      >
-        <div className="summary-grid">
-          <SummaryCard title="Default model" value={draft.activeModelId} detail={activeModelInstalled ? "Installed and ready" : "Choose an installed model before saving"} tone={activeModelInstalled ? "ready" : "attention"} />
-          <SummaryCard title="Runtime" value={speechRuntime?.whisperCliFound ? "Ready" : "Needs install"} detail={speechRuntime?.whisperCliPath ?? "Local engine check"} tone={speechRuntime?.whisperCliFound ? "ready" : "attention"} />
-          <SummaryCard title="Accessibility" value={accessibilityGranted ? "Granted" : "Needs attention"} detail="Controls auto-paste into other apps" tone={accessibilityGranted ? "ready" : "attention"} />
-          <SummaryCard title="Hotkey" value={formatShortcut(draft.shortcut)} detail="Hold to dictate, release to transcribe" tone="ready" />
-        </div>
-      </PanelShell>
-    </section>
-  );
-}
-
-type SettingsRenderArgs = {
-  section: SectionId;
-  draft: AppSettings;
-  models: ModelRow[];
-  installedModels: ModelRow[];
-  activeModelInstalled: boolean;
-  downloadProgress: Record<string, number>;
-  speechRuntime: SpeechRuntimeDiagnostics | null;
-  accessibilityGranted: boolean | null;
-  recordingHotkey: boolean;
-  onboarding: OnboardingState;
-  averageSpeechWpm: number;
-  weeklyWords: number;
-  speechStats: SpeechStats;
-  readinessRatio: number;
-  isInstallingRuntime: boolean;
-  status: StatusMessage;
-  toggleCapture: () => Promise<void>;
-  installSpeechRuntime: () => Promise<void>;
-  openPrivacySettings: () => Promise<void>;
-  startOnboardingAgain: () => Promise<void>;
-  resetSpeechStats: () => void;
-  setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
-  setIsDirty: React.Dispatch<React.SetStateAction<boolean>>;
-  downloadModel: (modelId: string, name: string) => Promise<void>;
-  removeModel: (modelId: string, name: string) => Promise<void>;
-};
-
-function renderSettingsSection(args: SettingsRenderArgs): React.ReactElement {
-  const {
-    section,
+    downloadModelId,
     draft,
+    hotkeyReady,
+    installRuntime,
+    installUpdate,
+    installingUpdate,
+    installingRuntime,
+    microphoneGranted,
     models,
-    installedModels,
-    activeModelInstalled,
-    downloadProgress,
-    speechRuntime,
-    accessibilityGranted,
-    recordingHotkey,
-    onboarding,
-    averageSpeechWpm,
-    weeklyWords,
-    speechStats,
-    readinessRatio,
-    isInstallingRuntime,
-    status,
-    toggleCapture,
-    installSpeechRuntime,
-    openPrivacySettings,
-    startOnboardingAgain,
-    resetSpeechStats,
+    openPrivacy,
+    permissionState,
+    removeModel,
+    removingModelId,
+    requestMicrophone,
+    resetOnboarding,
+    runtimeReady,
+    runtimeState,
+    snapshot,
     setDraft,
-    setIsDirty,
-    downloadModel,
-    removeModel
-  } = args;
-
-  if (section === "overview") {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Workspace health"
-          title="Daily dictation at a glance"
-          description="This view keeps the system-critical pieces visible so you can trust the next transcription before you start speaking."
-          aside={<StatusPill tone={readinessRatio >= 80 ? "ready" : "attention"}>{readinessRatio}% ready</StatusPill>}
-        >
-          <div className="dashboard-grid">
-            <SummaryCard title="Setup" value={onboarding.completed ? "Complete" : "Incomplete"} detail={onboarding.completed ? "You can rerun setup anytime" : "Finish setup for a guided flow"} tone={onboarding.completed ? "ready" : "attention"} action={<button onClick={() => void startOnboardingAgain()} type="button">Run Setup Wizard</button>} />
-            <SummaryCard title="Model library" value={`${installedModels.length}/${models.length || 0}`} detail={installedModels.length > 0 ? `Default: ${draft.activeModelId}` : "Download a model to begin"} tone={installedModels.length > 0 ? "ready" : "attention"} />
-            <SummaryCard title="Runtime" value={speechRuntime?.whisperCliFound ? "Installed" : "Missing"} detail={speechRuntime?.whisperCliPath ?? "Local engine diagnostics"} tone={speechRuntime?.whisperCliFound ? "ready" : "attention"} action={!speechRuntime?.whisperCliFound ? <button onClick={() => void installSpeechRuntime()} type="button">Install Runtime</button> : undefined} />
-            <SummaryCard title="Permissions" value={accessibilityGranted ? "Granted" : accessibilityGranted === null ? "Checking" : "Needs review"} detail="Needed for auto-paste into your active app" tone={accessibilityGranted === null ? "pending" : accessibilityGranted ? "ready" : "attention"} action={!accessibilityGranted ? <button onClick={() => void openPrivacySettings()} type="button">Open Privacy Settings</button> : undefined} />
-          </div>
-        </PanelShell>
-
-        <div className="two-column-grid">
-          <PanelShell eyebrow="Workflow defaults" title="Current dictation behavior" description="These settings shape how Vorn Voice behaves every time you dictate.">
-            <div className="stacked-facts">
-              <FactRow label="Default model" value={draft.activeModelId} />
-              <FactRow label="Auto-paste" value={draft.autoPaste ? "Enabled" : "Manual"} />
-              <FactRow label="Clipboard restore" value={draft.autoPaste && draft.restoreClipboard ? "Enabled" : "Off"} />
-              <FactRow label="Auto-updates" value={draft.autoUpdateEnabled ? "Enabled" : "Manual"} />
-            </div>
-          </PanelShell>
-
-          <PanelShell eyebrow="Recent signal" title="What needs your attention now" description="The footer stays available, but important context is surfaced here too.">
-            <InlineNotice tone={status.tone} text={status.text} />
-          </PanelShell>
-        </div>
-      </section>
-    );
-  }
-
-  if (section === "hotkey") {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Push-to-talk"
-          title="A shortcut built for repetition"
-          description="This is the only input you use constantly, so it should be comfortable and easy to remember."
-          aside={<StatusPill tone={recordingHotkey ? "pending" : "ready"}>{recordingHotkey ? "Capturing" : "Ready"}</StatusPill>}
-        >
-          <HotkeyPanel draft={draft} recordingHotkey={recordingHotkey} toggleCapture={toggleCapture} />
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (section === "models") {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Local models"
-          title="Keep quality and speed in balance"
-          description="All recognition runs locally, so installed models are the core of the app experience."
-          aside={<StatusPill tone={activeModelInstalled ? "ready" : "attention"}>{activeModelInstalled ? "Default is ready" : "Select an installed model"}</StatusPill>}
-        >
-          <ModelManagerPanel
-            draft={draft}
-            models={models}
-            installedModels={installedModels}
-            activeModelInstalled={activeModelInstalled}
-            downloadProgress={downloadProgress}
-            setDraft={setDraft}
-            setIsDirty={setIsDirty}
-            downloadModel={downloadModel}
-            removeModel={removeModel}
-          />
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (section === "runtime") {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="Engine diagnostics"
-          title="Confirm local transcription is available"
-          description="If the runtime is healthy, the rest of the product usually feels instant and predictable."
-          aside={<StatusPill tone={speechRuntime?.whisperCliFound ? "ready" : "attention"}>{speechRuntime?.whisperCliFound ? "Ready" : "Needs install"}</StatusPill>}
-        >
-          <HealthCard
-            title="Whisper CLI"
-            description={speechRuntime?.whisperCliFound ? speechRuntime.whisperCliPath ?? "Runtime detected" : "No runtime found in checked locations yet."}
-            tone={speechRuntime?.whisperCliFound ? "ready" : "attention"}
-            action={
-              !speechRuntime?.whisperCliFound ? (
-                <button onClick={() => void installSpeechRuntime()} type="button">
-                  {isInstallingRuntime ? "Installing..." : "Install Runtime"}
-                </button>
-              ) : undefined
-            }
-          />
-          {speechRuntime && speechRuntime.checkedPaths.length > 0 ? (
-            <div className="token-list" aria-label="Checked paths">
-              {speechRuntime.checkedPaths.map((path) => (
-                <code key={path}>{path}</code>
-              ))}
-            </div>
-          ) : null}
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (section === "permissions") {
-    return (
-      <section className="content-stack">
-        <PanelShell
-          eyebrow="macOS privacy"
-          title="Accessibility keeps auto-paste seamless"
-          description="Without this permission, Vorn Voice can still transcribe but cannot finish the handoff into other apps automatically."
-          aside={<StatusPill tone={accessibilityGranted === null ? "pending" : accessibilityGranted ? "ready" : "attention"}>{accessibilityGranted === null ? "Checking" : accessibilityGranted ? "Granted" : "Needs review"}</StatusPill>}
-        >
-          <HealthCard
-            title="Accessibility access"
-            description={
-              accessibilityGranted === null
-                ? "Checking current permission state."
-                : accessibilityGranted
-                  ? "macOS has granted the app permission to control UI input for pasting."
-                  : "Grant access, then return here and refresh checks if needed."
-            }
-            tone={accessibilityGranted === null ? "pending" : accessibilityGranted ? "ready" : "attention"}
-            action={
-              accessibilityGranted ? undefined : (
-                <button onClick={() => void openPrivacySettings()} type="button">
-                  Open Privacy Settings
-                </button>
-              )
-            }
-          />
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (section === "paste") {
-    return (
-      <section className="content-stack">
-        <PanelShell eyebrow="Output handoff" title="Choose how text lands in the active app" description="These defaults control whether Vorn Voice pastes for you or only leaves a transcript ready to use.">
-          <div className="setting-grid">
-            <ToggleCard
-              title="Auto-paste after transcription"
-              description="Send the transcribed text straight into the app you are already using."
-              checked={draft.autoPaste}
-              onChange={(checked) => {
-                setDraft((prev) => ({ ...prev, autoPaste: checked }));
-                setIsDirty(true);
-              }}
-            />
-            <ToggleCard
-              title="Restore clipboard after paste"
-              description="Put your previous clipboard content back after Vorn Voice finishes inserting text."
-              checked={draft.restoreClipboard}
-              disabled={!draft.autoPaste}
-              onChange={(checked) => {
-                setDraft((prev) => ({ ...prev, restoreClipboard: checked }));
-                setIsDirty(true);
-              }}
-            />
-          </div>
-        </PanelShell>
-      </section>
-    );
-  }
-
-  if (section === "updates") {
-    return (
-      <section className="content-stack">
-        <PanelShell eyebrow="Maintenance" title="Decide how hands-off updates should be" description="Keeping updates automatic is the easiest way to pick up runtime and workflow improvements without extra work.">
-          <div className="setting-grid single-column">
-            <ToggleCard
-              title="Enable automatic updates"
-              description="Allow Vorn Voice to download and apply updates from your configured feed automatically."
-              checked={draft.autoUpdateEnabled}
-              onChange={(checked) => {
-                setDraft((prev) => ({ ...prev, autoUpdateEnabled: checked }));
-                setIsDirty(true);
-              }}
-            />
-          </div>
-        </PanelShell>
-      </section>
-    );
-  }
-
-  return (
-    <section className="content-stack">
-      <PanelShell eyebrow="Speech metrics" title="A small diagnostic view for speaking rhythm" description="This is intentionally lightweight, but it is enough to tell whether your pace is consistent over time.">
-        <div className="dashboard-grid metrics-grid-wide">
-          <MetricCard label="Average speed" value={`${Math.round(averageSpeechWpm)} WPM`} />
-          <MetricCard label="Words this week" value={String(weeklyWords)} />
-          <MetricCard label="Samples tracked" value={String(speechStats.sampleCount)} />
-          <MetricCard label="Last sample" value={speechStats.lastSampleWpm ? `${Math.round(speechStats.lastSampleWpm)} WPM` : "-"} />
-        </div>
-        <div className="panel-actions align-end">
-          <button onClick={resetSpeechStats} type="button">
-            Reset Stats
-          </button>
-        </div>
-      </PanelShell>
-    </section>
-  );
-}
-
-type ModelPanelArgs = {
-  draft: AppSettings;
-  models: ModelRow[];
-  installedModels: ModelRow[];
-  activeModelInstalled: boolean;
-  downloadProgress: Record<string, number>;
-  setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
-  setIsDirty: React.Dispatch<React.SetStateAction<boolean>>;
-  downloadModel: (modelId: string, name: string) => Promise<void>;
-  removeModel: (modelId: string, name: string) => Promise<void>;
-};
-
-function ModelManagerPanel(props: ModelPanelArgs): React.ReactElement {
-  const {
-    draft,
-    models,
-    installedModels,
-    activeModelInstalled,
-    downloadProgress,
-    setDraft,
-    setIsDirty,
-    downloadModel,
-    removeModel
+    updateState
   } = props;
 
   return (
-    <div className="content-stack compact">
-      <div className="field-card">
-        <div>
-          <p className="field-label">Default model</p>
-          <p className="field-copy">The selected model is used for new dictation sessions.</p>
+    <div className="flex flex-col gap-3">
+      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+        <SectionHeading title="Models" text="Only installed models can be selected. Install one first, then choose which model Vorn should use." />
+        <ModelPanel
+          activeModelId={draft.activeModelId}
+          downloadModel={downloadModel}
+          downloadModelId={downloadModelId}
+          models={models}
+          onSelect={(modelId) => setDraft((current) => ({ ...current, activeModelId: modelId }))}
+          removeModel={removeModel}
+          removingModelId={removingModelId}
+        />
+      </Card>
+
+      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+        <SectionHeading title="Dictation" text="Choose your shortcut and how Vorn should deliver text after transcription." />
+        <HotkeyPanel capturePending={capturePending} onBegin={beginHotkeyCapture} onCancel={cancelHotkeyCapture} shortcut={draft.shortcut} />
+        <div className="flex flex-col gap-3">
+          <ToggleRow checked={draft.autoPaste} detail="Paste into the frontmost app after each transcript." label="Auto-paste text" onChange={(checked) => setDraft((current) => ({ ...current, autoPaste: checked }))} />
+          <ToggleRow checked={draft.restoreClipboard} detail="Restore your clipboard after auto-paste runs." label="Restore clipboard" onChange={(checked) => setDraft((current) => ({ ...current, restoreClipboard: checked }))} />
         </div>
-        <select
-          id="model-select"
-          disabled={models.length === 0}
-          value={draft.activeModelId}
-          onChange={(event) => {
-            setDraft((prev) => ({ ...prev, activeModelId: event.target.value }));
-            setIsDirty(true);
-          }}
-        >
-          {models.length === 0 ? (
-            <option value={draft.activeModelId}>No models available</option>
-          ) : (
-            models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.name}
-              </option>
-            ))
-          )}
-        </select>
-      </div>
+        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <SectionHeading compact title="Speech cleanup" text="Balanced keeps your full recording by default. Aggressive trims more silence, while Off sends raw audio to Whisper." />
+          <CleanupModeSelector mode={draft.speechCleanupMode} onChange={(mode) => setDraft((current) => ({ ...current, speechCleanupMode: mode }))} />
+        </section>
+        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <SectionHeading compact title="Low-latency capture" text="Keeps a warm local mic stream so speech right after keydown and right before keyup is less likely to clip." />
+          <div className="flex flex-col gap-3">
+            <ToggleRow
+              checked={draft.lowLatencyCaptureEnabled}
+              detail="Recommended for push-to-talk. Audio stays local and only recent PCM is buffered in memory."
+              label="Enable low-latency capture"
+              onChange={(checked) => setDraft((current) => ({ ...current, lowLatencyCaptureEnabled: checked }))}
+            />
+          </div>
+          {draft.lowLatencyCaptureEnabled ? (
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
+                <span>Pre-roll (ms)</span>
+                <Input
+                  className="h-10"
+                  min={0}
+                  max={1200}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    setDraft((current) => ({ ...current, preRollMs: clampCaptureWindow(value, current.preRollMs) }));
+                  }}
+                  type="number"
+                  value={draft.preRollMs}
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
+                <span>Post-roll (ms)</span>
+                <Input
+                  className="h-10"
+                  min={0}
+                  max={1200}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    setDraft((current) => ({ ...current, postRollMs: clampCaptureWindow(value, current.postRollMs) }));
+                  }}
+                  type="number"
+                  value={draft.postRollMs}
+                />
+              </label>
+            </div>
+          ) : null}
+        </section>
+      </Card>
 
-      {models.length > 0 && !activeModelInstalled ? <InlineNotice tone="warning" text="Your current default model is not installed yet. Download it or select an installed option before saving." /> : null}
+      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+        <SectionHeading title="Setup status" text="Keep an eye on the essentials here. If these checks are green, dictation should be ready to go." />
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <CheckCard detail={activeModelInstalled ? activeModel?.name ?? "Installed" : "Install a model, then select it."} ready={activeModelInstalled} title="Model" />
+          <CheckCard action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>} detail={runtimeReady ? "Speech runtime found." : "Needed for local transcription."} ready={runtimeReady} title="Speech runtime" />
+          <CheckCard action={<Button variant="outline" onClick={() => void requestMicrophone()} type="button">{microphoneGranted ? "Check again" : "Allow microphone"}</Button>} detail={microphoneGranted ? "Microphone access granted." : "Needed before dictation can start."} ready={microphoneGranted} title="Microphone" />
+          <CheckCard action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined} detail={draft.autoPaste ? (accessibilityReady ? "Ready for auto-paste." : "Needed only if auto-paste is enabled.") : "Optional because auto-paste is off."} ready={accessibilityReady} title="Accessibility" />
+          <CheckCard detail={permissionState?.hotkeyMessage ?? "Global shortcut monitoring is working."} ready={hotkeyReady} title="Hotkey monitoring" />
+        </div>
+      </Card>
 
-      <div className="model-grid refined">
-        {models.map((model) => {
-          const progress = downloadProgress[model.id];
-          const isDownloading = progress !== undefined && progress < 100;
-          const isActive = draft.activeModelId === model.id;
+      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+        <SectionHeading title="Advanced" text="Use these controls when you need to troubleshoot permissions, runtime detection, or update behavior." />
+        <div className="flex flex-col gap-3">
+          <ToggleRow checked={draft.autoUpdateEnabled} detail="Automatically download and install app updates when available." label="Automatic updates" onChange={(checked) => setDraft((current) => ({ ...current, autoUpdateEnabled: checked }))} />
+        </div>
+        <div className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <strong className="text-sm">App updates</strong>
+            <Badge className={cn(
+              "rounded-full",
+              updateState?.canInstall
+                ? "bg-emerald-600/20 text-emerald-200"
+                : updateState?.enabled
+                  ? "bg-[#111111] text-[rgb(var(--muted-foreground))]"
+                  : "bg-amber-500/20 text-amber-100"
+            )} variant="outline">
+              {updateState?.canInstall ? "Ready to install" : updateState?.enabled ? "Auto updates on" : "Auto updates off"}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">Version {appVersion}</p>
+          <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{updateState?.label ?? "Update status unavailable."}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button disabled={checkingForUpdates} variant="outline" onClick={() => void checkForUpdates()} type="button">
+              {checkingForUpdates ? "Checking..." : "Check for updates"}
+            </Button>
+            <Button disabled={!updateState?.canInstall || installingUpdate} variant="outline" onClick={() => void installUpdate()} type="button">
+              {installingUpdate ? "Installing..." : "Install downloaded update"}
+            </Button>
+          </div>
+        </div>
+        <div className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <strong className="text-sm">Runtime path</strong>
+          <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{runtimeState?.whisperCliPath ?? "whisper-cli not found yet."}</p>
+        </div>
+        {runtimeState?.checkedPaths?.length ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {runtimeState.checkedPaths.map((checkedPath) => (
+              <Badge className={TOKEN_BADGE_CLASS} key={checkedPath} variant="outline">{checkedPath}</Badge>
+            ))}
+          </div>
+        ) : null}
+        {permissionState?.hotkeyMessage ? (
+          <div className="mt-4 rounded-2xl border border-amber-700/40 bg-[#1f1310] p-4">
+            <strong className="text-sm">Hotkey note</strong>
+            <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{permissionState.hotkeyMessage}</p>
+          </div>
+        ) : null}
+        <DiagnosticsPanel diagnostics={snapshot.lastSpeechDiagnostics} fallbackRuntimePath={runtimeState?.whisperCliPath} selectedModelName={activeModel?.name ?? draft.activeModelId} />
+        <div className="mt-4 flex flex-wrap justify-between gap-3">
+          <Button variant="outline" onClick={() => void openPrivacy("microphone")} type="button">Open Microphone Settings</Button>
+          <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" variant="outline" onClick={() => void resetOnboarding()} type="button">Run setup again</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
 
-          return (
-            <article key={model.id} className={model.installed ? "model-card installed" : "model-card"}>
-              <div className="model-card-header">
-                <div>
-                  <h3>{model.name}</h3>
-                  <p>{model.details}</p>
-                </div>
-                {isActive ? <StatusPill tone={model.installed ? "ready" : "attention"}>Default</StatusPill> : null}
+type SaveToastProps = {
+  message: StatusMessage;
+};
+
+function SaveToast({ message }: SaveToastProps): ReactElement {
+  const toneClasses: Record<StatusTone, string> = {
+    neutral: "border-[rgb(var(--border))] bg-[#111111] text-[rgb(var(--foreground))]",
+    success: "border-emerald-500/40 bg-emerald-950/50 text-emerald-100",
+    warning: "border-amber-500/40 bg-amber-950/50 text-amber-100",
+    danger: "border-red-500/40 bg-red-950/50 text-red-100"
+  };
+
+  return (
+    <div className={cn("fixed right-4 top-4 z-50 inline-flex max-w-[min(360px,calc(100vw-32px))] items-center gap-2 rounded-xl border px-3 py-2 text-sm shadow-lg backdrop-blur-sm", toneClasses[message.tone])} role="status">
+      <span aria-hidden="true" className="h-2 w-2 rounded-full bg-current" />
+      <span>{message.text}</span>
+    </div>
+  );
+}
+
+type ModelPanelProps = {
+  activeModelId: string;
+  downloadModel: (modelId: string) => Promise<void>;
+  downloadModelId: string | null;
+  models: ModelListItem[];
+  onSelect: (modelId: string) => void;
+  removeModel: (modelId: string) => Promise<void>;
+  removingModelId: string | null;
+};
+
+const RECOMMENDED_MODEL_ID = "small.en";
+
+type CleanupModeSelectorProps = {
+  mode: SpeechCleanupMode;
+  onChange: (mode: SpeechCleanupMode) => void;
+};
+
+const CLEANUP_MODE_DETAILS: Record<SpeechCleanupMode, { description: string; label: string }> = {
+  off: {
+    label: "Off",
+    description: "Send the raw recording to Whisper. Slowest, but safest for soft or distant speech."
+  },
+  balanced: {
+    label: "Balanced",
+    description: "Default. Light rumble cleanup without trimming away quiet starts or pauses."
+  },
+  aggressive: {
+    label: "Aggressive",
+    description: "Trims more silence before transcription. Best only when your mic is already strong and clear."
+  }
+};
+
+function ModelPanel(props: ModelPanelProps): ReactElement {
+  const { activeModelId, downloadModel, downloadModelId, models, onSelect, removeModel, removingModelId } = props;
+  const installedCount = models.filter((model) => model.installed).length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {installedCount === 0 ? (
+        <div className="rounded-2xl border border-amber-700/40 bg-[#1f1310] p-4">
+          <strong className="text-sm">No installed models yet</strong>
+          <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">Install one model to unlock selection. Uninstalled models stay unavailable until the download finishes.</p>
+        </div>
+      ) : null}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+      {models.map((model) => {
+        const selected = model.installed && model.id === activeModelId;
+        const busy = downloadModelId === model.id || removingModelId === model.id;
+        const recommended = model.id === RECOMMENDED_MODEL_ID;
+        const stateLabel = selected ? "Selected" : model.installed ? "Installed" : "Install";
+
+        return (
+          <article className={cn("flex flex-col gap-3 rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-4 transition-colors", selected && "border-[rgb(var(--accent))]/70 shadow-[inset_0_0_0_1px_rgba(249,115,22,0.4)]")} key={model.id}>
+            <div className="flex items-start justify-between gap-3">
+              <strong className="text-base">{model.name}</strong>
+              <div className="flex flex-wrap justify-end gap-2">
+                {recommended ? <Badge variant="outline">Recommended</Badge> : null}
+                <Badge variant={selected || model.installed ? "secondary" : "outline"}>{stateLabel}</Badge>
               </div>
-
-              <div className="model-card-footer">
-                {isDownloading ? (
-                  <div className="progress-panel">
-                    <div className="progress-track">
-                      <div className="progress-fill" style={{ width: `${progress}%` }} />
-                    </div>
-                    <span>{progress}%</span>
-                  </div>
-                ) : model.installed ? (
-                  <div className="panel-actions">
-                    <span className="meta-text">Installed locally</span>
-                    <button onClick={() => void removeModel(model.id, model.name)} type="button">
-                      Remove
-                    </button>
-                  </div>
-                ) : (
-                  <div className="panel-actions">
-                    <span className="meta-text">Available to download</span>
-                    <button onClick={() => void downloadModel(model.id, model.name)} type="button">
-                      Download
-                    </button>
-                  </div>
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </div>
-
-      <div className="token-list" aria-label="Installed models">
-        {(installedModels.length > 0 ? installedModels : [{ id: "none", name: "No installed models", details: "", installed: false }]).map((model) => (
-          <code key={model.id}>{model.name}</code>
-        ))}
+            </div>
+            <div>
+              <p className="text-sm text-[rgb(var(--muted-foreground))]">{model.details}</p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              {model.installed ? (
+                <>
+                  <Button disabled={selected || busy} size="sm" onClick={() => onSelect(model.id)} type="button">{selected ? "Selected" : "Select"}</Button>
+                  <Button disabled={busy} size="sm" variant="outline" onClick={() => void removeModel(model.id)} type="button">{busy ? "Working..." : "Remove"}</Button>
+                </>
+              ) : (
+                <Button disabled={busy} size="sm" onClick={() => void downloadModel(model.id)} type="button">{busy ? "Installing..." : "Install"}</Button>
+              )}
+            </div>
+          </article>
+        );
+      })}
       </div>
     </div>
   );
 }
 
-function PanelShell(props: {
-  eyebrow: string;
-  title: string;
-  description: string;
-  children: React.ReactNode;
-  aside?: React.ReactNode;
-}): React.ReactElement {
+type HotkeyPanelProps = {
+  capturePending: boolean;
+  onBegin: () => Promise<void>;
+  onCancel: () => Promise<void>;
+  shortcut: KeyboardShortcut;
+};
+
+function HotkeyPanel({ capturePending, onBegin, onCancel, shortcut }: HotkeyPanelProps): ReactElement {
   return (
-    <section className="panel-shell">
-      <div className="panel-head">
-        <div>
-          <p className="panel-eyebrow">{props.eyebrow}</p>
-          <h3>{props.title}</h3>
-          <p>{props.description}</p>
-        </div>
-        {props.aside ? <div className="panel-head-aside">{props.aside}</div> : null}
+    <section className={cn("mb-4", SUB_PANEL_CLASS)}>
+      <SectionHeading title="Shortcut" text="Hold this shortcut to record. Release it to transcribe." compact />
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <span className="inline-flex min-w-[170px] items-center justify-center rounded-full border border-[rgb(var(--border))] bg-[#111111] px-4 py-2 text-sm">{capturePending ? "Listening for keys..." : shortcut.display ?? "Not set"}</span>
+        {capturePending ? (
+          <Button variant="outline" onClick={() => void onCancel()} type="button">Cancel</Button>
+        ) : (
+          <Button variant="outline" onClick={() => void onBegin()} type="button">Change shortcut</Button>
+        )}
       </div>
-      {props.children}
     </section>
   );
 }
 
-function StatusKey({ label, value, tone }: { label: string; value: string; tone: HealthTone }): React.ReactElement {
+function CleanupModeSelector({ mode, onChange }: CleanupModeSelectorProps): ReactElement {
+  const safeMode: SpeechCleanupMode = typeof mode === "string" && Object.hasOwn(CLEANUP_MODE_DETAILS, mode)
+    ? mode as SpeechCleanupMode
+    : "balanced";
+
   return (
-    <div className="status-key">
-      <span className={`status-dot tone-${tone}`} aria-hidden="true" />
-      <div>
-        <small>{label}</small>
-        <strong>{value}</strong>
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        {(Object.keys(CLEANUP_MODE_DETAILS) as SpeechCleanupMode[]).map((option) => (
+          <Button
+            key={option}
+            className={cn(safeMode === option && "border-[rgb(var(--accent))] bg-[rgb(var(--accent))]/15 text-[rgb(var(--foreground))]")}
+            size="sm"
+            variant="outline"
+            onClick={() => onChange(option)}
+            type="button"
+          >
+            {CLEANUP_MODE_DETAILS[option].label}
+          </Button>
+        ))}
       </div>
+      <p className="text-sm text-[rgb(var(--muted-foreground))]">{CLEANUP_MODE_DETAILS[safeMode].description}</p>
     </div>
   );
 }
 
-function StatusPill({ tone, children }: { tone: HealthTone; children: React.ReactNode }): React.ReactElement {
-  return <span className={`status-pill tone-${tone}`}>{children}</span>;
-}
-
-function InlineNotice({ tone, text }: { tone: StatusTone | "warning"; text: string }): React.ReactElement {
-  const mappedTone = tone === "warning" ? "warning" : tone;
-  return <div className={`inline-notice tone-${mappedTone}`}>{text}</div>;
-}
-
-function FeatureCard({ title, copy }: { title: string; copy: string }): React.ReactElement {
-  return (
-    <article className="feature-card">
-      <h4>{title}</h4>
-      <p>{copy}</p>
-    </article>
-  );
-}
-
-function TipCard({ title, copy }: { title: string; copy: string }): React.ReactElement {
-  return (
-    <article className="tip-card">
-      <h4>{title}</h4>
-      <p>{copy}</p>
-    </article>
-  );
-}
-
-function ChecklistRow({ ready, label, detail }: { ready: boolean; label: string; detail: string }): React.ReactElement {
-  return (
-    <div className="checklist-row">
-      <span className={ready ? "checklist-mark ready" : "checklist-mark"} aria-hidden="true" />
-      <div>
-        <strong>{label}</strong>
-        <p>{detail}</p>
-      </div>
-    </div>
-  );
-}
-
-function HealthCard(props: { title: string; description: string; tone: HealthTone; action?: React.ReactNode }): React.ReactElement {
-  return (
-    <article className={`health-card tone-${props.tone}`}>
-      <div className="health-card-head">
-        <StatusPill tone={props.tone}>{healthLabel(props.tone)}</StatusPill>
-        <h4>{props.title}</h4>
-      </div>
-      <p>{props.description}</p>
-      {props.action ? <div className="panel-actions">{props.action}</div> : null}
-    </article>
-  );
-}
-
-function HotkeyPanel(props: {
-  draft: AppSettings;
-  recordingHotkey: boolean;
-  toggleCapture: () => Promise<void>;
-}): React.ReactElement {
-  return (
-    <div className="hotkey-card polished">
-      <div>
-        <p className="field-label">Current shortcut</p>
-        <div className="hotkey-value">{props.recordingHotkey ? "Waiting for key press..." : formatShortcut(props.draft.shortcut)}</div>
-      </div>
-      <button className={props.recordingHotkey ? "recording" : "primary"} onClick={() => void props.toggleCapture()} type="button">
-        {props.recordingHotkey ? "Cancel Capture" : "Record New Hotkey"}
-      </button>
-    </div>
-  );
-}
-
-function ToggleCard(props: {
-  title: string;
-  description: string;
+type ToggleRowProps = {
   checked: boolean;
-  disabled?: boolean;
+  detail: string;
+  label: string;
   onChange: (checked: boolean) => void;
-}): React.ReactElement {
+};
+
+function ToggleRow({ checked, detail, label, onChange }: ToggleRowProps): ReactElement {
   return (
-    <label className={props.disabled ? "toggle-card disabled" : "toggle-card"}>
-      <div>
-        <h4>{props.title}</h4>
-        <p>{props.description}</p>
+    <label className="flex items-start justify-between gap-4 rounded-2xl border border-[rgb(var(--border))] bg-[#151515] px-4 py-3 transition-colors hover:border-[#3a3a3a]">
+      <div className="flex flex-col gap-1">
+        <strong className="text-sm">{label}</strong>
+        <p className="text-sm text-[rgb(var(--muted-foreground))]">{detail}</p>
       </div>
-      <input checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.target.checked)} type="checkbox" />
+      <Switch checked={checked} onCheckedChange={onChange} />
     </label>
   );
 }
 
-function SummaryCard(props: {
-  title: string;
-  value: string;
+type CheckCardProps = {
+  action?: ReactElement;
   detail: string;
-  tone: HealthTone;
-  action?: React.ReactNode;
-}): React.ReactElement {
+  ready: boolean;
+  title: string;
+};
+
+function CheckCard({ action, detail, ready, title }: CheckCardProps): ReactElement {
   return (
-    <article className={`summary-card tone-${props.tone}`}>
-      <div className="summary-card-head">
-        <small>{props.title}</small>
-        <StatusPill tone={props.tone}>{healthLabel(props.tone)}</StatusPill>
+    <article className={cn("flex h-full flex-col gap-3 rounded-2xl border bg-[#151515] p-4", ready ? "border-emerald-600/40" : "border-amber-600/40")}>
+      <div className="flex items-center justify-between gap-2">
+        <strong className="text-sm">{title}</strong>
+        <Badge className={cn("rounded-full", ready ? "bg-emerald-600/20 text-emerald-200" : "bg-amber-500/20 text-amber-100")} variant="outline">{ready ? "Ready" : "Needs attention"}</Badge>
       </div>
-      <strong>{props.value}</strong>
-      <p>{props.detail}</p>
-      {props.action ? <div className="panel-actions">{props.action}</div> : null}
+      <p className="text-sm text-[rgb(var(--muted-foreground))]">{detail}</p>
+      {action ? <div className="mt-auto">{action}</div> : null}
     </article>
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string }): React.ReactElement {
-  return (
-    <article className="metric-card">
-      <small>{label}</small>
-      <strong>{value}</strong>
-    </article>
-  );
-}
+type DiagnosticsPanelProps = {
+  diagnostics?: SpeechPipelineDiagnostics;
+  fallbackRuntimePath?: string;
+  selectedModelName: string;
+};
 
-function FactRow({ label, value }: { label: string; value: string }): React.ReactElement {
+function DiagnosticsPanel({ diagnostics, fallbackRuntimePath, selectedModelName }: DiagnosticsPanelProps): ReactElement {
+  if (!diagnostics) {
+    return (
+      <div className={cn("mt-4", SUB_PANEL_CLASS)}>
+        <strong className="text-sm">Last dictation diagnostics</strong>
+        <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">After your next dictation, Vorn will show how much cleanup ran, whether chunking kicked in, and which runtime and model were used.</p>
+      </div>
+    );
+  }
+
+  const capture = diagnostics.capture;
+  const transcription = diagnostics.transcription;
+
   return (
-    <div className="fact-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="mt-4 flex flex-col gap-3">
+      <div className={cn(SUB_PANEL_CLASS, diagnostics.lastError && "border-amber-700/40 bg-[#1f1310]")}>
+        <strong className="text-sm">Last dictation diagnostics</strong>
+        <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">
+          {diagnostics.lastError
+            ? diagnostics.lastError
+            : `Cleanup ran in ${capture?.appliedCleanupMode ?? diagnostics.requestedCleanupMode} mode and ${transcription?.chunked ? `used ${transcription.chunkCount} chunks` : "stayed in a single Whisper pass"}.`}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Badge className={TOKEN_BADGE_CLASS} variant="outline">Requested cleanup: {diagnostics.requestedCleanupMode}</Badge>
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Applied cleanup: {capture.appliedCleanupMode}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Fallback: {capture.fallbackUsed ? "Yes" : "No"}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Capture backend: {capture.captureBackend}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Raw length: {formatSeconds(capture.raw.durationSeconds)}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Final length: {formatSeconds(capture.final.durationSeconds)}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Raw RMS: {capture.raw.rmsAmplitude.toFixed(4)}</Badge> : null}
+        {capture ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Final RMS: {capture.final.rmsAmplitude.toFixed(4)}</Badge> : null}
+        {capture && typeof capture.preRollMsRequested === "number" ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Pre-roll: {capture.preRollMsDelivered ?? 0}/{capture.preRollMsRequested}ms</Badge> : null}
+        {capture && typeof capture.postRollMsRequested === "number" ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Post-roll: {capture.postRollMsDelivered ?? 0}/{capture.postRollMsRequested}ms</Badge> : null}
+        {capture && typeof capture.keydownToCaptureReadyMs === "number" ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Start latency: {capture.keydownToCaptureReadyMs}ms</Badge> : null}
+        {capture && typeof capture.keyupToCaptureStoppedMs === "number" ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Stop latency: {capture.keyupToCaptureStoppedMs}ms</Badge> : null}
+        {transcription ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Chunking: {transcription.chunked ? `${transcription.chunkCount} chunks` : "Single pass"}</Badge> : null}
+        {transcription ? <Badge className={TOKEN_BADGE_CLASS} variant="outline">Blank chunks: {transcription.blankChunkCount}</Badge> : null}
+        <Badge className={TOKEN_BADGE_CLASS} variant="outline">Model: {transcription?.modelId ?? selectedModelName}</Badge>
+        <Badge className={TOKEN_BADGE_CLASS} variant="outline">Runtime: {transcription?.runtimePath ?? fallbackRuntimePath ?? "Unknown"}</Badge>
+      </div>
     </div>
   );
 }
 
-function getVoicebarApi(): Window["voicebar"] | undefined {
-  const candidate = (window as Window & { voicebar?: Window["voicebar"] }).voicebar;
-  return candidate;
+type SectionHeadingProps = {
+  compact?: boolean;
+  text: string;
+  title: string;
+};
+
+function SectionHeading({ compact = false, text, title }: SectionHeadingProps): ReactElement {
+  return (
+    <div className={cn("mb-4 flex flex-col gap-1", compact && "mb-3")}>
+      <h3 className="text-xl font-semibold tracking-tight">{title}</h3>
+      <p className="text-sm text-[rgb(var(--muted-foreground))]">{text}</p>
+    </div>
+  );
 }
 
-function parseWindowMode(): SettingsWindowMode {
-  const mode = new URLSearchParams(window.location.search).get("mode");
-  return mode === "onboarding" ? "onboarding" : "settings";
+type SidebarStatProps = {
+  label: string;
+  tone: StatusTone;
+  value: string;
+};
+
+function SidebarStat({ label, tone, value }: SidebarStatProps): ReactElement {
+  const toneClass: Record<StatusTone, string> = {
+    neutral: "text-[rgb(var(--foreground))]",
+    success: "text-emerald-400",
+    warning: "text-amber-300",
+    danger: "text-red-400"
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border))]/80 py-2.5 last:border-b-0 last:pb-0">
+      <span className="text-sm text-[rgb(var(--muted-foreground))]">{label}</span>
+      <strong className={cn("text-sm", toneClass[tone])}>{value}</strong>
+    </div>
+  );
 }
 
-async function loadCriticalSettingsData(
-  voicebar: VoicebarApi
-): Promise<{ snapshot: AppSnapshot; listedModels: ModelRow[]; warnings: string[] }> {
-  const [stateResult, modelsResult] = await Promise.allSettled([
-    withTimeout(voicebar.getState(), CRITICAL_IPC_TIMEOUT_MS, "State load"),
-    withTimeout(voicebar.listModels(), CRITICAL_IPC_TIMEOUT_MS, "Model list load")
+type ShellProps = {
+  children: ReactElement;
+};
+
+function Shell({ children }: ShellProps): ReactElement {
+  return <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(249,115,22,0.12),_transparent_55%),linear-gradient(180deg,#050505,#090909)] text-[rgb(var(--foreground))]">{children}</div>;
+}
+
+type EmptyStateProps = {
+  text: string;
+  title: string;
+};
+
+function EmptyState({ text, title }: EmptyStateProps): ReactElement {
+  return (
+    <div className="mx-auto mt-20 flex max-w-lg flex-col gap-3 rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-6 text-center">
+      <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+      <p className="text-sm text-[rgb(var(--muted-foreground))]">{text}</p>
+    </div>
+  );
+}
+
+async function loadCriticalSettingsData(voicebar: NonNullable<Window["voicebar"]>): Promise<CriticalSettingsData> {
+  const [snapshot, models] = await Promise.all([
+    withTimeout(voicebar.getState(), 5000, "App state"),
+    withTimeout(voicebar.listModels(), 5000, "Model list")
   ]);
 
-  const warnings: string[] = [];
-  let snapshot = FALLBACK_SNAPSHOT;
-  let listedModels: ModelRow[] = [];
-
-  if (stateResult.status === "fulfilled") {
-    snapshot = stateResult.value;
-  } else {
-    warnings.push(`State load failed: ${errorToMessage(stateResult.reason)}`);
-  }
-
-  if (modelsResult.status === "fulfilled") {
-    listedModels = modelsResult.value;
-  } else {
-    warnings.push(`Model list failed: ${errorToMessage(modelsResult.reason)}`);
-  }
-
-  return { snapshot, listedModels, warnings };
+  return { snapshot, models };
 }
 
-async function loadNonCriticalSettingsData(
-  voicebar: VoicebarApi
-): Promise<{ permission?: { accessibility: boolean }; runtime?: SpeechRuntimeDiagnostics; errors: string[] }> {
-  const [permissionResult, runtimeResult] = await Promise.allSettled([
-    withTimeout(voicebar.checkPermissions(), NON_CRITICAL_IPC_TIMEOUT_MS, "Permissions check"),
-    withTimeout(voicebar.getSpeechRuntimeDiagnostics(), NON_CRITICAL_IPC_TIMEOUT_MS, "Runtime diagnostics")
+async function loadSupportChecks(voicebar: NonNullable<Window["voicebar"]>): Promise<SupportChecksData> {
+  const results = await Promise.allSettled([
+    withTimeout(voicebar.checkPermissions(), 4500, "Permissions"),
+    withTimeout(voicebar.getSpeechRuntimeDiagnostics(), 4500, "Runtime")
   ]);
 
+  const [permissionResult, runtimeResult] = results;
   const errors: string[] = [];
-  let permission: { accessibility: boolean } | undefined;
-  let runtime: SpeechRuntimeDiagnostics | undefined;
 
-  if (permissionResult.status === "fulfilled") {
-    permission = permissionResult.value;
-  } else {
-    errors.push(`Permissions check failed: ${errorToMessage(permissionResult.reason)}`);
-  }
-
-  if (runtimeResult.status === "fulfilled") {
-    runtime = runtimeResult.value;
-  } else {
-    errors.push(`Runtime diagnostics failed: ${errorToMessage(runtimeResult.reason)}`);
-  }
-
-  return { permission, runtime, errors };
+  return {
+    permission: permissionResult.status === "fulfilled" ? permissionResult.value : collectSupportError(errors, permissionResult.reason, "Could not refresh permissions."),
+    runtime: runtimeResult.status === "fulfilled" ? runtimeResult.value : collectSupportError(errors, runtimeResult.reason, "Could not refresh runtime status."),
+    errors
+  };
 }
 
-function loadSpeechStats(): SpeechStats {
-  try {
-    return parseSpeechStats(window.localStorage.getItem(SPEECH_STATS_STORAGE_KEY));
-  } catch {
-    return parseSpeechStats(null);
-  }
-}
+async function refreshSupportChecks(
+  voicebar: NonNullable<Window["voicebar"]>,
+  setPermissionState: (value: PermissionsSnapshot | null) => void,
+  setRuntimeState: (value: SpeechRuntimeDiagnostics | null) => void,
+  setStatus: (value: StatusMessage) => void,
+  announceSuccess: boolean
+): Promise<void> {
+  const support = await loadSupportChecks(voicebar);
 
-function loadThemePreference(): ThemePreference {
-  try {
-    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (value === "light" || value === "dark" || value === "system") {
-      return value;
-    }
-  } catch {
-    // Ignore localStorage read failures.
+  if (support.permission) {
+    setPermissionState(support.permission);
   }
 
-  return "system";
-}
-
-function persistThemePreference(theme: ThemePreference): void {
-  try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-  } catch {
-    // Ignore localStorage write failures.
+  if (support.runtime) {
+    setRuntimeState(support.runtime);
   }
-}
 
-function persistSpeechStats(stats: SpeechStats): void {
-  try {
-    window.localStorage.setItem(SPEECH_STATS_STORAGE_KEY, JSON.stringify(stats));
-  } catch {
-    // Ignore localStorage write failures.
-  }
-}
-
-function applySampleToStats(sample: SpeechSample | undefined, setSpeechStats: React.Dispatch<React.SetStateAction<SpeechStats>>): void {
-  if (!sample) {
+  if (support.errors.length > 0) {
+    setStatus({ tone: "warning", text: support.errors[0] });
     return;
   }
 
-  setSpeechStats((previous) => {
-    const next = applySpeechSample(previous, sample);
-    if (next === previous) {
-      return previous;
-    }
-
-    persistSpeechStats(next);
-    return next;
-  });
+  if (announceSuccess) {
+    setStatus({ tone: "neutral", text: "Checks refreshed." });
+  }
 }
 
-function buildFocusStatus(props: {
-  inOnboarding: boolean;
-  status: StatusMessage;
-  isDirty: boolean;
-  runtimeReady: boolean;
-  permissionsReady: boolean;
-  installedModelCount: number;
-  activeModelInstalled: boolean;
-  recordingHotkey: boolean;
-}): string {
-  if (props.inOnboarding) {
-    if (!props.runtimeReady) return "Install the runtime to unlock local transcription.";
-    if (!props.permissionsReady) return "Grant Accessibility access for seamless auto-paste.";
-    if (props.installedModelCount === 0) return "Download a model to finish setup strongly.";
-    return "The last setup choices should only take a moment.";
+function collectSupportError<T>(errors: string[], error: unknown, fallback: string): T | undefined {
+  errors.push(errorToMessage(error, fallback));
+  return undefined;
+}
+
+function settingsSignature(settings: AppSettings): string {
+  return JSON.stringify(settings);
+}
+
+function getVoicebarApi(): Window["voicebar"] | undefined {
+  return window.voicebar;
+}
+
+function parseWindowMode(): SettingsWindowMode {
+  const search = new URLSearchParams(window.location.search);
+  return search.get("mode") === "onboarding" ? "onboarding" : "settings";
+}
+
+function microphoneLabel(permissionState: PermissionsSnapshot | null): string {
+  if (!permissionState) {
+    return "Checking";
   }
 
-  if (props.isDirty) return "You have unsaved changes waiting in this workspace.";
-  if (!props.activeModelInstalled) return "Your default model is not installed yet.";
-  if (props.recordingHotkey) return "Listening for your next shortcut.";
-  return props.status.text;
+  switch (permissionState.microphone) {
+    case "granted":
+      return "Granted";
+    case "not-determined":
+      return "Ask me";
+    case "denied":
+      return "Denied";
+    case "restricted":
+      return "Restricted";
+    default:
+      return "Review";
+  }
 }
 
-function updateStatus(setStatus: React.Dispatch<React.SetStateAction<StatusMessage>>, text: string, tone: StatusTone): void {
-  setStatus({ text, tone });
-}
-
-function footerHeading(tone: StatusTone): string {
-  if (tone === "success") return "All set";
-  if (tone === "warning") return "Needs attention";
-  if (tone === "danger") return "Action needed";
-  return "Workspace status";
-}
-
-function statusChipClass(tone: StatusTone): string {
-  return `hero-chip tone-${tone}`;
-}
-
-function healthLabel(tone: HealthTone): string {
-  if (tone === "ready") return "Ready";
-  if (tone === "pending") return "Checking";
-  return "Attention";
-}
-
-function errorToMessage(error: unknown): string {
-  if (error instanceof Error) {
+function errorToMessage(error: unknown, fallback = "Something went wrong."): string {
+  if (error instanceof Error && error.message) {
     return error.message;
   }
 
-  return String(error);
+  return fallback;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  let timeoutHandle: ReturnType<typeof setTimeout>;
+function formatSeconds(value: number): string {
+  return `${value.toFixed(1)}s`;
+}
 
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+function clampCaptureWindow(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(1200, Math.max(0, Math.round(value)));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error(`${label} took too long.`));
     }, timeoutMs);
-  });
 
-  return Promise.race([promise, timeout]).finally(() => {
-    clearTimeout(timeoutHandle);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      }
+    );
   });
 }
-
-const onboardingDescriptions = [
-  "Understand the workflow before you configure anything.",
-  "Install the right model for your machine and accuracy needs.",
-  "Confirm the local runtime and macOS access are both healthy.",
-  "Choose the shortcut you will use every day.",
-  "Review the essentials and finish setup."
-];

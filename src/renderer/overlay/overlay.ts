@@ -1,23 +1,30 @@
 import "./overlay.css";
+import { OverlayPayload } from "../../shared/types";
 
 const text = must<HTMLParagraphElement>("overlayText");
 const state = must<HTMLParagraphElement>("overlayState");
 const pulse = must<HTMLSpanElement>(".pulse", true);
 const overlay = must<HTMLElement>(".overlay", true);
 
-window.voicebar.onOverlayUpdate((payload) => {
-  const labels = overlayLabels(payload.type, payload.text);
+if (!window.voicebar) {
+  overlay.dataset.state = "message";
+  state.textContent = "Bridge unavailable";
+  text.textContent = "Open settings and restart Vorn Voice after checking your runtime setup.";
+} else {
+  window.voicebar.onOverlayUpdate((payload: OverlayPayload) => {
+    const labels = overlayLabels(payload.type, payload.text);
 
-  overlay.dataset.state = payload.type;
-  state.textContent = labels.kicker;
-  text.textContent = labels.message;
+    overlay.dataset.state = payload.type;
+    state.textContent = labels.kicker;
+    text.textContent = labels.message;
 
-  if (payload.type === "message") {
-    pulse.classList.add("pause");
-  } else {
-    pulse.classList.remove("pause");
-  }
-});
+    if (payload.type === "message") {
+      pulse.classList.add("pause");
+    } else {
+      pulse.classList.remove("pause");
+    }
+  });
+}
 
 function overlayLabels(type: "listening" | "transcribing" | "message", textValue?: string): { kicker: string; message: string } {
   if (type === "listening") {

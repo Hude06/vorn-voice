@@ -22,19 +22,28 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
       onRelease = release;
     }),
     register: vi.fn(),
+    getStatusError: vi.fn(() => undefined),
+    warmup: vi.fn(),
     unregisterAll: vi.fn()
   };
   const audioCapture = {
+    configureRealtimeCapture: vi.fn(),
     startCapture: vi.fn(async () => undefined),
-    stopCapture: vi.fn(async () => "/tmp/sample.wav")
+    stopCapture: vi.fn(async () => "/tmp/sample.wav"),
+    prewarmCapture: vi.fn(async () => undefined),
+    getLastDiagnostics: vi.fn(() => undefined),
+    shutdown: vi.fn(async () => undefined)
   };
   const whisper = {
     transcribe: vi.fn(async () => "hello"),
+    ensureRuntimeAvailable: vi.fn(async () => "/tmp/whisper-cli"),
+    getLastDiagnostics: vi.fn(() => undefined),
     installRuntime: vi.fn(async () => undefined)
   };
   const modelManager = { resolveModelPath: vi.fn(async () => "/tmp/model.bin") };
   const pasteService = { pasteText: vi.fn(async () => undefined) };
   const permissionService = {
+    getMicrophonePermissionStatus: vi.fn(() => "granted"),
     requestMicrophonePermission: vi.fn(async () => true),
     checkAccessibilityPermission: vi.fn(() => true)
   };
@@ -67,7 +76,9 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
     audioCapture,
     whisper,
     overlay,
+    modelManager,
     pasteService,
+    permissionService,
     press: async () => {
       onPress?.();
       await waitForCoordinator();
@@ -175,6 +186,19 @@ describe("AppCoordinator error mode behavior", () => {
     expect(harness.overlay.show).toHaveBeenCalledWith("message", "No speech detected");
   });
 
+  it("keeps idle mode for quiet-input errors", async () => {
+    const harness = createHarness();
+    harness.audioCapture.stopCapture.mockRejectedValue(new Error("Input too quiet. Move closer to the mic or speak a little louder."));
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("idle");
+    expect(snapshot.errorMessage).toBe("Input too quiet. Move closer to the mic or speak a little louder.");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Input too quiet. Move closer to the mic or speak a little louder.");
+  });
+
   it("keeps hard failures in error mode", async () => {
     const harness = createHarness();
     harness.audioCapture.stopCapture.mockRejectedValue(new Error("Audio capture failed: recorder crashed"));
@@ -185,7 +209,59 @@ describe("AppCoordinator error mode behavior", () => {
     const snapshot = harness.state.getSnapshot();
     expect(snapshot.mode).toBe("error");
     expect(snapshot.errorMessage).toBe("Audio capture failed: recorder crashed");
-    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Recording failed");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Audio capture failed: recorder crashed");
+  });
+
+  it("shows the missing runtime message during transcription failures", async () => {
+    const harness = createHarness();
+    harness.whisper.ensureRuntimeAvailable.mockRejectedValue(
+      new Error("whisper-cli not found. Install the Whisper runtime from Settings.")
+    );
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("error");
+    expect(snapshot.errorMessage).toBe("whisper-cli not found. Install the Whisper runtime from Settings.");
+    expect(harness.overlay.show).toHaveBeenCalledWith(
+      "message",
+      "whisper-cli not found. Install the Whisper runtime from Settings."
+    );
+  });
+
+  it("shows the missing model message during transcription failures", async () => {
+    const harness = createHarness();
+    harness.modelManager.resolveModelPath.mockRejectedValue(new Error("Model is not installed"));
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("error");
+    expect(snapshot.errorMessage).toBe("Model is not installed");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Model is not installed");
+  });
+
+  it("shows the accessibility message when paste automation cannot run", async () => {
+    const harness = createHarness({
+      initialSettings: {
+        ...DEFAULT_SETTINGS,
+        autoPaste: true
+      }
+    });
+    harness.permissionService.checkAccessibilityPermission.mockReturnValue(false);
+
+    await harness.press();
+    await harness.release();
+
+    const snapshot = harness.state.getSnapshot();
+    expect(snapshot.mode).toBe("error");
+    expect(snapshot.errorMessage).toBe("Accessibility permission is required for paste automation");
+    expect(harness.overlay.show).toHaveBeenCalledWith(
+      "message",
+      "Accessibility permission is required for paste automation"
+    );
   });
 
   it("shows transcribed messaging when auto-paste is disabled", async () => {
@@ -213,5 +289,27 @@ describe("AppCoordinator error mode behavior", () => {
     expect(snapshot.lastTranscriptWordCount).toBeGreaterThan(100);
     expect(snapshot.lastTranscriptPreview.length).toBeLessThanOrEqual(280);
     expect(snapshot.lastTranscriptTruncated).toBe(true);
+  });
+
+  it("handles release while capture startup is still in flight", async () => {
+    const harness = createHarness();
+
+    let resolveStart: () => void = () => undefined;
+    const startPromise = new Promise<undefined>((resolve) => {
+      resolveStart = () => resolve(undefined);
+    });
+    harness.audioCapture.startCapture.mockImplementation(() => startPromise);
+
+    const pressPromise = harness.press();
+    await waitForCoordinator();
+    const releasePromise = harness.release();
+
+    resolveStart();
+    await pressPromise;
+    await releasePromise;
+    await waitForCoordinator();
+
+    expect(harness.audioCapture.stopCapture).toHaveBeenCalledTimes(1);
+    expect(harness.whisper.transcribe).toHaveBeenCalledTimes(1);
   });
 });

@@ -33,6 +33,7 @@ export class HotkeyService {
   private accelerator?: string;
   private pressed = false;
   private started = false;
+  private hookUnavailableMessage?: string;
   private onPress?: HotkeyCallback;
   private onRelease?: HotkeyCallback;
   private captureCallback?: CaptureCallback;
@@ -49,11 +50,10 @@ export class HotkeyService {
       throw new Error("That key is not supported for global shortcuts");
     }
 
-    this.ensureHookStarted();
-
     if (this.accelerator === accelerator) {
       this.shortcut = shortcut;
       this.pressed = false;
+      this.ensureHookStarted();
       return;
     }
 
@@ -75,6 +75,7 @@ export class HotkeyService {
     this.accelerator = accelerator;
     this.shortcut = shortcut;
     this.pressed = false;
+    this.ensureHookStarted();
   }
 
   setHandlers(onPress: HotkeyCallback, onRelease: HotkeyCallback): void {
@@ -102,7 +103,19 @@ export class HotkeyService {
   }
 
   beginCapture(onCaptured: CaptureCallback): void {
+    this.ensureHookStarted();
+    if (this.hookUnavailableMessage) {
+      throw new Error(this.hookUnavailableMessage);
+    }
     this.captureCallback = onCaptured;
+  }
+
+  probeHook(): string | undefined {
+    this.ensureHookStarted();
+    return this.hookUnavailableMessage;
+  }
+
+  warmup(): void {
     this.ensureHookStarted();
   }
 
@@ -215,19 +228,38 @@ export class HotkeyService {
       return;
     }
 
+    this.ensureHookStarted();
+    if (this.hookUnavailableMessage) {
+      return;
+    }
+
     this.pressed = true;
     this.onPress?.();
   };
 
   private ensureHookStarted(): void {
-    if (this.started) {
+    if (this.started || this.hookUnavailableMessage) {
       return;
     }
 
-    this.iohook = loadIOHook();
-    this.iohook.on("keydown", this.handleDown);
-    this.iohook.on("keyup", this.handleUp);
-    this.iohook.start();
-    this.started = true;
+    try {
+      this.iohook = loadIOHook();
+      this.iohook.on("keydown", this.handleDown);
+      this.iohook.on("keyup", this.handleUp);
+      this.iohook.start();
+      this.started = true;
+      this.hookUnavailableMessage = undefined;
+    } catch (error) {
+      this.hookUnavailableMessage = error instanceof Error
+        ? error.message
+        : "Global hotkey support is unavailable. Reinstall the app and try again.";
+      this.captureCallback = undefined;
+      this.iohook = undefined;
+      console.error(this.hookUnavailableMessage);
+    }
+  }
+
+  getStatusError(): string | undefined {
+    return this.hookUnavailableMessage;
   }
 }

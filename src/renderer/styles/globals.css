@@ -1,29 +1,29 @@
 @import "tailwindcss";
 
 :root {
-  --background: 246 247 251;
-  --foreground: 24 24 28;
-  --muted: 236 239 244;
-  --muted-foreground: 107 114 128;
-  --card: 255 255 255;
-  --card-foreground: 24 24 28;
-  --border: 224 229 236;
-  --accent: 26 120 255;
-  --accent-foreground: 255 255 255;
-  --danger: 224 63 94;
+  --background: 5 5 5;
+  --foreground: 245 245 245;
+  --muted: 21 21 21;
+  --muted-foreground: 161 161 170;
+  --card: 17 17 17;
+  --card-foreground: 245 245 245;
+  --border: 35 35 35;
+  --accent: 249 115 22;
+  --accent-foreground: 17 17 17;
+  --danger: 239 68 68;
 }
 
 [data-theme="dark"] {
-  --background: 10 12 16;
-  --foreground: 236 239 244;
-  --muted: 26 30 37;
-  --muted-foreground: 156 163 175;
-  --card: 16 19 25;
-  --card-foreground: 240 243 248;
-  --border: 38 44 55;
-  --accent: 72 149 255;
-  --accent-foreground: 7 10 15;
-  --danger: 245 83 116;
+  --background: 5 5 5;
+  --foreground: 245 245 245;
+  --muted: 21 21 21;
+  --muted-foreground: 161 161 170;
+  --card: 17 17 17;
+  --card-foreground: 245 245 245;
+  --border: 35 35 35;
+  --accent: 249 115 22;
+  --accent-foreground: 17 17 17;
+  --danger: 239 68 68;
 }
 
 * {

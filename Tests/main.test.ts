@@ -40,7 +40,10 @@ describe("main process startup", () => {
     const tray = { setUpdateMenuState: vi.fn(), update: vi.fn() };
     const settingsStore = {
       load: vi.fn(() => DEFAULT_SETTINGS),
-      loadOnboarding: vi.fn(() => ({ completed: true, version: 1 }))
+      loadOnboarding: vi.fn(() => ({ completed: true, version: 1 })),
+      resolveSettingsWindowMode: vi.fn((mode?: string) => mode ?? "settings"),
+      shouldOpenWindowOnLaunch: vi.fn(() => true),
+      markPostOnboardingWindowSeen: vi.fn()
     };
     const appState = {
       on: vi.fn(),
@@ -63,7 +66,7 @@ describe("main process startup", () => {
     vi.doMock("../src/main/services/hotkeyService", () => ({ HotkeyService: vi.fn(() => ({})) }));
     vi.doMock("../src/main/services/audioCaptureService", () => ({ AudioCaptureService: vi.fn(() => ({})) }));
     vi.doMock("../src/main/services/whisperService", () => ({ WhisperService: vi.fn(() => whisperService) }));
-    vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn(() => ({})) }));
+    vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn(() => ({ ensureBundledModel: vi.fn(async () => true) })) }));
     vi.doMock("../src/main/services/pasteService", () => ({ PasteService: vi.fn(() => ({})) }));
     vi.doMock("../src/main/services/permissionService", () => ({ PermissionService: vi.fn(() => ({})) }));
     vi.doMock("../src/main/services/updateService", () => ({ UpdateService: vi.fn(() => updateService) }));
@@ -114,7 +117,7 @@ describe("main process startup", () => {
     vi.doMock("../src/main/services/hotkeyService", () => ({ HotkeyService: vi.fn() }));
     vi.doMock("../src/main/services/audioCaptureService", () => ({ AudioCaptureService: vi.fn() }));
     vi.doMock("../src/main/services/whisperService", () => ({ WhisperService: vi.fn(() => ({ getDiagnostics: vi.fn() })) }));
-    vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn() }));
+    vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn(() => ({ ensureBundledModel: vi.fn(async () => true) })) }));
     vi.doMock("../src/main/services/pasteService", () => ({ PasteService: vi.fn() }));
     vi.doMock("../src/main/services/permissionService", () => ({ PermissionService: vi.fn() }));
     vi.doMock("../src/main/services/updateService", () => ({ UpdateService: vi.fn() }));

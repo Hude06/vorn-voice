@@ -20,6 +20,7 @@ let coordinator: AppCoordinator | undefined;
 let updateService: UpdateService | undefined;
 let unsubscribeUpdateState: (() => void) | undefined;
 let settingsWindow: SettingsWindow | undefined;
+let tray: TrayController | undefined;
 let startupContext: { preloadPath: string; rendererURL?: string } | undefined;
 
 async function bootstrap(): Promise<void> {
@@ -37,6 +38,7 @@ async function bootstrap(): Promise<void> {
   updateService = new UpdateService(process.env.VORN_UPDATE_FEED_URL);
   const updater = updateService;
   const modelManager = new ModelManager();
+  await modelManager.ensureBundledModel(settings.activeModelId).catch(() => undefined);
   const pasteService = new PasteService();
   const permissionService = new PermissionService();
   settingsWindow = new SettingsWindow();
@@ -64,6 +66,7 @@ async function bootstrap(): Promise<void> {
     modelManager,
     permissionService,
     whisperService,
+    updater,
     settingsStore,
     settingsWindow: settingsUi,
     preloadPath,
@@ -72,9 +75,9 @@ async function bootstrap(): Promise<void> {
 
   void whisperService.getDiagnostics().catch(() => undefined);
 
-  const tray = new TrayController(
+  tray = new TrayController(
     () => {
-      settingsUi.show(preloadPath, rendererURL, "settings");
+      settingsUi.show(preloadPath, rendererURL, settingsStore.resolveSettingsWindowMode("settings"));
     },
     () => {
       app.quit();
@@ -89,22 +92,24 @@ async function bootstrap(): Promise<void> {
 
   updater.start(settings.autoUpdateEnabled);
   unsubscribeUpdateState = updater.onMenuStateChanged((menuState) => {
-    tray.setUpdateMenuState(menuState);
+    tray?.setUpdateMenuState(menuState);
   });
 
   appState.on("changed", (snapshot) => {
-    tray.update(snapshot);
+    tray?.update(snapshot);
     updater.setEnabled(snapshot.settings.autoUpdateEnabled);
   });
   tray.update(appState.getSnapshot());
 
-  const onboarding = settingsStore.loadOnboarding();
-  const shouldShowOnboarding = !onboarding.completed || onboarding.version < ONBOARDING_VERSION;
   const startupIssue = coordinator.start();
-  const initialMode = shouldShowOnboarding ? "onboarding" : "settings";
+  const initialMode = settingsStore.resolveSettingsWindowMode();
 
-  if (shouldShowOnboarding || startupIssue) {
+  if (settingsStore.shouldOpenWindowOnLaunch() || startupIssue) {
     settingsUi.show(preloadPath, rendererURL, initialMode);
+
+    if (initialMode === "settings") {
+      settingsStore.markPostOnboardingWindowSeen();
+    }
   }
 }
 
@@ -123,7 +128,12 @@ app.on("activate", () => {
     return;
   }
 
-  settingsWindow.show(startupContext.preloadPath, startupContext.rendererURL, "settings");
+  const settingsStore = new SettingsStore();
+  settingsWindow.show(
+    startupContext.preloadPath,
+    startupContext.rendererURL,
+    settingsStore.resolveSettingsWindowMode("settings")
+  );
 });
 
 app.whenReady().then(async () => {
@@ -135,7 +145,12 @@ app.whenReady().then(async () => {
     dialog.showErrorBox("Vorn Voice could not start", message);
 
     if (settingsWindow && startupContext) {
-      settingsWindow.show(startupContext.preloadPath, startupContext.rendererURL, "settings");
+      const settingsStore = new SettingsStore();
+      settingsWindow.show(
+        startupContext.preloadPath,
+        startupContext.rendererURL,
+        settingsStore.resolveSettingsWindowMode("settings")
+      );
     }
   }
 });

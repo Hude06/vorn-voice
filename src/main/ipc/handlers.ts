@@ -1,14 +1,15 @@
-import { BrowserWindow, WebContents, ipcMain } from "electron";
+import { app, BrowserWindow, WebContents, ipcMain } from "electron";
 import { AppCoordinator } from "../coordinator";
 import { HotkeyService } from "../services/hotkeyService";
 import { ModelManager } from "../services/modelManager";
 import { PermissionService } from "../services/permissionService";
 import { SettingsStore } from "../services/settingsStore";
+import { UpdateService } from "../services/updateService";
 import { WhisperService } from "../services/whisperService";
 import { AppState } from "../state/appState";
 import { SettingsWindow } from "../windows/settingsWindow";
 import { IPC_CHANNELS } from "./channels";
-import { AppSettings, OnboardingState, SettingsWindowMode } from "../../shared/types";
+import { AppSettings, OnboardingState, PrivacyPane, SettingsWindowMode } from "../../shared/types";
 
 type HandlerDeps = {
   appState: AppState;
@@ -17,6 +18,7 @@ type HandlerDeps = {
   modelManager: ModelManager;
   permissionService: PermissionService;
   whisperService: WhisperService;
+  updater: UpdateService;
   settingsStore: SettingsStore;
   settingsWindow: SettingsWindow;
   preloadPath: string;
@@ -25,14 +27,28 @@ type HandlerDeps = {
 
 export function registerIpcHandlers(deps: HandlerDeps): void {
   ipcMain.handle(IPC_CHANNELS.stateGet, () => deps.appState.getSnapshot());
+  ipcMain.handle(IPC_CHANNELS.appVersionGet, () => app.getVersion());
 
   ipcMain.handle(IPC_CHANNELS.settingsSave, (_event, settings: AppSettings) => {
     deps.coordinator.updateSettings(settings);
     return deps.appState.getSnapshot();
   });
 
+  ipcMain.handle(IPC_CHANNELS.updatesGetState, () => deps.updater.getMenuState());
+
+  ipcMain.handle(IPC_CHANNELS.updatesCheckManual, async () => {
+    await deps.updater.checkForUpdatesManual();
+    return deps.updater.getMenuState();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.updatesInstall, () => deps.updater.installDownloadedUpdate());
+
   ipcMain.handle(IPC_CHANNELS.settingsOpen, (_event, mode?: SettingsWindowMode) => {
-    deps.settingsWindow.show(deps.preloadPath, deps.rendererURL, mode ?? "settings");
+    deps.settingsWindow.show(
+      deps.preloadPath,
+      deps.rendererURL,
+      deps.settingsStore.resolveSettingsWindowMode(mode)
+    );
     return true;
   });
 
@@ -81,14 +97,23 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
     return true;
   });
 
-  ipcMain.handle(IPC_CHANNELS.permissionsOpenPrivacy, () => {
-    deps.permissionService.openPrivacySettings();
+  ipcMain.handle(IPC_CHANNELS.permissionsOpenPrivacy, (_event, pane?: PrivacyPane) => {
+    deps.permissionService.openPrivacySettings(pane);
     return true;
   });
 
-  ipcMain.handle(IPC_CHANNELS.permissionsCheck, () => ({
-    accessibility: deps.permissionService.checkAccessibilityPermission(false)
-  }));
+  ipcMain.handle(IPC_CHANNELS.permissionsRequestMicrophone, () => deps.permissionService.requestMicrophonePermission());
+
+  ipcMain.handle(IPC_CHANNELS.permissionsCheck, () => {
+    const hotkeyMessage = deps.hotkeyService.probeHook();
+
+    return {
+      accessibility: deps.permissionService.checkAccessibilityPermission(false),
+      microphone: deps.permissionService.getMicrophonePermissionStatus(),
+      hotkeyReady: !hotkeyMessage,
+      hotkeyMessage
+    };
+  });
 
   ipcMain.handle(IPC_CHANNELS.speechRuntimeDiagnostics, async () => deps.whisperService.getDiagnostics());
 
@@ -97,6 +122,12 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
   deps.appState.on("changed", (snapshot) => {
     BrowserWindow.getAllWindows().forEach((window) => {
       safeSend(window.webContents, IPC_CHANNELS.stateChanged, snapshot);
+    });
+  });
+
+  deps.updater.onMenuStateChanged((menuState) => {
+    BrowserWindow.getAllWindows().forEach((window) => {
+      safeSend(window.webContents, IPC_CHANNELS.updatesStateChanged, menuState);
     });
   });
 }

@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import https from "node:https";
 import { MODEL_CATALOG, WhisperModel } from "../../shared/types";
+import { resolveBundledFile } from "./runtimeAssetPaths";
 
 const MIN_MODEL_BYTES = 1_000_000;
 const MAX_REDIRECTS = 5;
@@ -49,6 +50,15 @@ export class ModelManager {
       throw new Error("Model already installed");
     }
 
+    const bundledSource = await this.resolveBundledModelPath(model);
+    if (bundledSource) {
+      await fsp.copyFile(bundledSource, destination);
+      if (onProgress) {
+        onProgress(100);
+      }
+      return;
+    }
+
     await fsp.rm(temporaryFile, { force: true });
 
     await this.downloadToFile(model.downloadUrl, temporaryFile, MAX_REDIRECTS, onProgress).catch(async (error) => {
@@ -90,10 +100,39 @@ export class ModelManager {
     }
 
     const target = this.localPath(model);
-    if (!(await this.isInstalled(modelId))) {
+    if (await this.isInstalled(modelId)) {
+      return target;
+    }
+
+    const bundledSource = await this.resolveBundledModelPath(model);
+    if (!bundledSource) {
       throw new Error("Model is not installed");
     }
+
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.copyFile(bundledSource, target);
     return target;
+  }
+
+  async ensureBundledModel(modelId: string): Promise<boolean> {
+    const model = this.getModel(modelId);
+    if (!model) {
+      return false;
+    }
+
+    if (await this.isInstalled(modelId)) {
+      return true;
+    }
+
+    const bundledSource = await this.resolveBundledModelPath(model);
+    if (!bundledSource) {
+      return false;
+    }
+
+    const target = this.localPath(model);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.copyFile(bundledSource, target);
+    return true;
   }
 
   private async downloadToFile(
@@ -152,6 +191,10 @@ export class ModelManager {
 
   private getModel(modelId: string): WhisperModel | undefined {
     return this.catalog.find((model) => model.id === modelId);
+  }
+
+  private async resolveBundledModelPath(model: WhisperModel): Promise<string | undefined> {
+    return resolveBundledFile(MIN_MODEL_BYTES, "models", model.fileName);
   }
 
   private localPath(model: WhisperModel): string {

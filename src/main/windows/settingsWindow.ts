@@ -5,16 +5,14 @@ import { SettingsWindowMode } from "../../shared/types";
 export class SettingsWindow {
   private window?: BrowserWindow;
   private currentMode: SettingsWindowMode = "settings";
+  private lastLoadFailed = false;
 
   show(preloadPath: string, rendererURL?: string, mode: SettingsWindowMode = "settings"): BrowserWindow {
     if (this.window && !this.window.isDestroyed()) {
-      if (this.currentMode !== mode) {
+      if (this.currentMode !== mode || this.lastLoadFailed) {
         this.currentMode = mode;
         this.window.setTitle(titleForMode(mode));
-        void loadSettingsPage(this.window, rendererURL, mode).catch((error) => {
-          console.error("Failed to load settings window", error);
-          void showLoadErrorPage(this.window, "Vorn Voice could not load the settings window.");
-        });
+        void this.loadWindow(rendererURL, mode);
       }
       this.window.show();
       this.window.focus();
@@ -38,19 +36,32 @@ export class SettingsWindow {
     });
 
     this.window.on("closed", () => {
+      this.lastLoadFailed = false;
       this.window = undefined;
     });
 
-    void loadSettingsPage(this.window, rendererURL, mode).catch((error) => {
-      console.error("Failed to load settings window", error);
-      void showLoadErrorPage(this.window, "Vorn Voice could not load the settings window.");
-    });
+    void this.loadWindow(rendererURL, mode);
 
     return this.window;
   }
 
   get(): BrowserWindow | undefined {
     return this.window;
+  }
+
+  private async loadWindow(rendererURL: string | undefined, mode: SettingsWindowMode): Promise<void> {
+    if (!this.window || this.window.isDestroyed()) {
+      return;
+    }
+
+    try {
+      await loadSettingsPage(this.window, rendererURL, mode);
+      this.lastLoadFailed = false;
+    } catch (error) {
+      this.lastLoadFailed = true;
+      console.error("Failed to load settings window", error);
+      await showLoadErrorPage(this.window, "Vorn Voice could not load the settings window. Please wait a moment and open it again.");
+    }
   }
 }
 

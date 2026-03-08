@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { AppMode, AppSettings, AppSnapshot, SpeechSample } from "../../shared/types";
+import { AppMode, AppSettings, AppSnapshot, SpeechPipelineDiagnostics, SpeechSample } from "../../shared/types";
 
 const MAX_TRANSCRIPT_PREVIEW_CHARS = 280;
 
@@ -10,6 +10,7 @@ export class AppState extends EventEmitter {
   private lastTranscriptWordCount = 0;
   private lastTranscriptTruncated = false;
   private lastSpeechSample?: SpeechSample;
+  private lastSpeechDiagnostics?: SpeechPipelineDiagnostics;
 
   constructor(private settings: AppSettings) {
     super();
@@ -23,7 +24,8 @@ export class AppState extends EventEmitter {
       lastTranscriptWordCount: this.lastTranscriptWordCount,
       lastTranscriptTruncated: this.lastTranscriptTruncated,
       settings: this.settings,
-      lastSpeechSample: this.lastSpeechSample
+      lastSpeechSample: this.lastSpeechSample,
+      lastSpeechDiagnostics: this.lastSpeechDiagnostics
     };
   }
 
@@ -50,6 +52,11 @@ export class AppState extends EventEmitter {
 
   setSpeechSample(sample: SpeechSample): void {
     this.lastSpeechSample = sample;
+    this.emit("changed", this.getSnapshot());
+  }
+
+  setSpeechDiagnostics(diagnostics: SpeechPipelineDiagnostics): void {
+    this.lastSpeechDiagnostics = diagnostics;
     this.emit("changed", this.getSnapshot());
   }
 }

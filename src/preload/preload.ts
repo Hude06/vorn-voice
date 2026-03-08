@@ -4,27 +4,36 @@ import {
   AppSettings,
   AppSnapshot,
   KeyboardShortcut,
+  ModelDownloadProgressPayload,
+  ModelListItem,
   OnboardingState,
+  OverlayPayload,
+  PrivacyPane,
+  PermissionsSnapshot,
   SettingsWindowMode,
-  SpeechRuntimeDiagnostics
+  SpeechRuntimeDiagnostics,
+  UpdateStatus,
+  VoicebarApi
 } from "../shared/types";
 
-type OverlayPayload = {
-  type: "listening" | "transcribing" | "message";
-  text?: string;
-};
-
-type ModelProgressPayload = {
-  modelId: string;
-  percent: number;
-};
-
-const api = {
+const api: VoicebarApi = {
   getState(): Promise<AppSnapshot> {
     return ipcRenderer.invoke(IPC_CHANNELS.stateGet);
   },
+  getAppVersion(): Promise<string> {
+    return ipcRenderer.invoke(IPC_CHANNELS.appVersionGet);
+  },
   saveSettings(settings: AppSettings): Promise<AppSnapshot> {
     return ipcRenderer.invoke(IPC_CHANNELS.settingsSave, settings);
+  },
+  getUpdateState(): Promise<UpdateStatus> {
+    return ipcRenderer.invoke(IPC_CHANNELS.updatesGetState);
+  },
+  checkForUpdatesManual(): Promise<UpdateStatus> {
+    return ipcRenderer.invoke(IPC_CHANNELS.updatesCheckManual);
+  },
+  installDownloadedUpdate(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_CHANNELS.updatesInstall);
   },
   getOnboardingState(): Promise<OnboardingState> {
     return ipcRenderer.invoke(IPC_CHANNELS.onboardingGet);
@@ -38,7 +47,7 @@ const api = {
   openSettings(mode?: SettingsWindowMode): Promise<boolean> {
     return ipcRenderer.invoke(IPC_CHANNELS.settingsOpen, mode);
   },
-  listModels(): Promise<Array<{ id: string; name: string; details: string; installed: boolean }>> {
+  listModels(): Promise<ModelListItem[]> {
     return ipcRenderer.invoke(IPC_CHANNELS.modelsList);
   },
   downloadModel(modelId: string): Promise<boolean> {
@@ -53,10 +62,13 @@ const api = {
   cancelHotkeyCapture(): Promise<boolean> {
     return ipcRenderer.invoke(IPC_CHANNELS.hotkeyCaptureCancel);
   },
-  openPrivacySettings(): Promise<boolean> {
-    return ipcRenderer.invoke(IPC_CHANNELS.permissionsOpenPrivacy);
+  requestMicrophonePermission(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_CHANNELS.permissionsRequestMicrophone);
   },
-  checkPermissions(): Promise<{ accessibility: boolean }> {
+  openPrivacySettings(pane?: PrivacyPane): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_CHANNELS.permissionsOpenPrivacy, pane);
+  },
+  checkPermissions(): Promise<PermissionsSnapshot> {
     return ipcRenderer.invoke(IPC_CHANNELS.permissionsCheck);
   },
   getSpeechRuntimeDiagnostics(): Promise<SpeechRuntimeDiagnostics> {
@@ -70,6 +82,13 @@ const api = {
     ipcRenderer.on(IPC_CHANNELS.stateChanged, listener);
     return () => {
       ipcRenderer.off(IPC_CHANNELS.stateChanged, listener);
+    };
+  },
+  onUpdateStateChanged(callback: (status: UpdateStatus) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, payload: UpdateStatus) => callback(payload);
+    ipcRenderer.on(IPC_CHANNELS.updatesStateChanged, listener);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.updatesStateChanged, listener);
     };
   },
   onOverlayUpdate(callback: (payload: OverlayPayload) => void): () => void {
@@ -86,8 +105,8 @@ const api = {
       ipcRenderer.off(IPC_CHANNELS.hotkeyCaptured, listener);
     };
   },
-  onModelDownloadProgress(callback: (payload: ModelProgressPayload) => void): () => void {
-    const listener = (_event: Electron.IpcRendererEvent, payload: ModelProgressPayload) => callback(payload);
+  onModelDownloadProgress(callback: (payload: ModelDownloadProgressPayload) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, payload: ModelDownloadProgressPayload) => callback(payload);
     ipcRenderer.on(IPC_CHANNELS.modelDownloadProgress, listener);
     return () => {
       ipcRenderer.off(IPC_CHANNELS.modelDownloadProgress, listener);

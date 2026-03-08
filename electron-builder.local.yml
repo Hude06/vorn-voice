@@ -8,6 +8,10 @@ files:
 extraResources:
   - from: build/runtime/bin
     to: bin
+  - from: build/runtime/lib
+    to: lib
+  - from: build/runtime/models
+    to: models
   - from: build/runtime/runtime-manifest.json
     to: runtime-manifest.json
 mac:

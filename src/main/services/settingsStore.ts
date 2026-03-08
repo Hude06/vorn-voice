@@ -6,6 +6,7 @@ import {
   DEFAULT_ONBOARDING_STATE,
   DEFAULT_SETTINGS,
   OnboardingState,
+  SettingsWindowMode,
   ONBOARDING_VERSION
 } from "../../shared/types";
 import { formatShortcut, validateShortcut } from "../../shared/shortcuts";
@@ -13,6 +14,9 @@ import { formatShortcut, validateShortcut } from "../../shared/shortcuts";
 type PersistedSettings = {
   settings: AppSettings;
   onboarding?: OnboardingState;
+  ui?: {
+    hasSeenPostOnboardingWindow?: boolean;
+  };
 };
 
 export class SettingsStore {
@@ -28,11 +32,46 @@ export class SettingsStore {
     return this.normalizeOnboarding(persisted.onboarding);
   }
 
+  shouldShowOnboarding(): boolean {
+    const onboarding = this.loadOnboarding();
+    return !onboarding.completed || onboarding.version < ONBOARDING_VERSION;
+  }
+
+  resolveSettingsWindowMode(requested?: SettingsWindowMode): SettingsWindowMode {
+    if (this.shouldShowOnboarding()) {
+      return "onboarding";
+    }
+
+    return requested ?? "settings";
+  }
+
+  shouldOpenWindowOnLaunch(): boolean {
+    if (this.shouldShowOnboarding()) {
+      return true;
+    }
+
+    const persisted = this.readPersisted();
+    return !persisted.ui?.hasSeenPostOnboardingWindow;
+  }
+
+  markPostOnboardingWindowSeen(): void {
+    const persisted = this.readPersisted();
+    this.writePersisted({
+      settings: this.normalizeSettings(persisted.settings),
+      onboarding: this.normalizeOnboarding(persisted.onboarding),
+      ui: {
+        ...persisted.ui,
+        hasSeenPostOnboardingWindow: true
+      }
+    });
+  }
+
   save(settings: AppSettings): void {
     const persisted = this.readPersisted();
     this.writePersisted({
       settings,
-      onboarding: this.normalizeOnboarding(persisted.onboarding)
+      onboarding: this.normalizeOnboarding(persisted.onboarding),
+      ui: persisted.ui
     });
   }
 
@@ -49,7 +88,8 @@ export class SettingsStore {
     const persisted = this.readPersisted();
     this.writePersisted({
       settings: this.normalizeSettings(persisted.settings),
-      onboarding: next
+      onboarding: next,
+      ui: persisted.ui
     });
 
     return next;
@@ -60,7 +100,8 @@ export class SettingsStore {
     const reset = { ...DEFAULT_ONBOARDING_STATE };
     this.writePersisted({
       settings: this.normalizeSettings(persisted.settings),
-      onboarding: reset
+      onboarding: reset,
+      ui: persisted.ui
     });
     return reset;
   }
@@ -109,6 +150,8 @@ export class SettingsStore {
 
     return {
       ...merged,
+      preRollMs: clampCaptureWindow(merged.preRollMs, 0, 1200, DEFAULT_SETTINGS.preRollMs),
+      postRollMs: clampCaptureWindow(merged.postRollMs, 0, 1200, DEFAULT_SETTINGS.postRollMs),
       shortcut: {
         ...merged.shortcut,
         display: formatShortcut(merged.shortcut)
@@ -134,4 +177,12 @@ export class SettingsStore {
 
     return normalized;
   }
+}
+
+function clampCaptureWindow(value: number, minimum: number, maximum: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }

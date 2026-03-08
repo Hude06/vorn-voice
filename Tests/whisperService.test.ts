@@ -22,7 +22,7 @@ describe("WhisperService long-audio handling", () => {
     const service = new WhisperService() as any;
 
     service.ensureRuntimeAvailable = vi.fn().mockResolvedValue("/tmp/whisper-cli");
-    service.getAudioDurationSeconds = vi.fn().mockResolvedValue(120);
+    service.getAudioDurationSeconds = vi.fn().mockResolvedValue(220);
     service.splitAudioIntoChunks = vi.fn().mockResolvedValue(["/tmp/chunk-1.wav", "/tmp/chunk-2.wav"]);
     service.transcribeSingle = vi
       .fn()
@@ -40,7 +40,7 @@ describe("WhisperService long-audio handling", () => {
     const service = new WhisperService() as any;
 
     service.ensureRuntimeAvailable = vi.fn().mockResolvedValue("/tmp/whisper-cli");
-    service.getAudioDurationSeconds = vi.fn().mockResolvedValue(35);
+    service.getAudioDurationSeconds = vi.fn().mockResolvedValue(60);
     service.splitAudioIntoChunks = vi.fn().mockResolvedValue(["/tmp/chunk-1.wav", "/tmp/chunk-2.wav"]);
     service.transcribeSingle = vi
       .fn()

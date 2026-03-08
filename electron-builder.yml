@@ -8,6 +8,10 @@ files:
 extraResources:
   - from: build/runtime/bin
     to: bin
+  - from: build/runtime/lib
+    to: lib
+  - from: build/runtime/models
+    to: models
   - from: build/runtime/runtime-manifest.json
     to: runtime-manifest.json
 mac:
@@ -23,4 +27,4 @@ mac:
   gatekeeperAssess: false
 publish:
   provider: generic
-  url: https://vornvoice.app/updates/mac/stable
+  url: https://vorn.judemakes.dev/updates/mac/stable

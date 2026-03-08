@@ -48,6 +48,10 @@ export class UpdateService {
     };
   }
 
+  getMenuState(): UpdateMenuState {
+    return this.menuState;
+  }
+
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) {
       return;
@@ -94,12 +98,13 @@ export class UpdateService {
     await this.checkForUpdates("manual");
   }
 
-  installDownloadedUpdate(): void {
+  installDownloadedUpdate(): boolean {
     if (!this.menuState.canInstall) {
-      return;
+      return false;
     }
 
     autoUpdater.quitAndInstall();
+    return true;
   }
 
   private configureUpdater(): void {

@@ -59,10 +59,22 @@ export class TrayController {
 function createTrayIcon() {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-      <rect x="6" y="3" width="6" height="8" rx="3" fill="black" />
-      <path d="M4.5 8.5a4.5 4.5 0 0 0 9 0" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" />
-      <line x1="9" y1="12.2" x2="9" y2="15.2" stroke="black" stroke-width="1.6" stroke-linecap="round" />
-      <line x1="6.7" y1="15.2" x2="11.3" y2="15.2" stroke="black" stroke-width="1.6" stroke-linecap="round" />
+      <path
+        d="M5.1 3.1h3.1L11 8l3-4.9h2.9L11 14.9 5.1 3.1Z"
+        fill="none"
+        stroke="black"
+        stroke-width="1.45"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M8.75 3.1 11 6.8"
+        fill="none"
+        stroke="black"
+        stroke-width="1.45"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
     </svg>
   `;
 

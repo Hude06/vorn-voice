@@ -11,9 +11,54 @@ export interface KeyboardShortcut {
 export interface AppSettings {
   shortcut: KeyboardShortcut;
   activeModelId: string;
+  speechCleanupMode: SpeechCleanupMode;
+  lowLatencyCaptureEnabled: boolean;
+  preRollMs: number;
+  postRollMs: number;
   autoPaste: boolean;
   restoreClipboard: boolean;
   autoUpdateEnabled: boolean;
+}
+
+export type SpeechCleanupMode = "off" | "balanced" | "aggressive";
+
+export interface AudioSignalStats {
+  durationSeconds: number;
+  maxAmplitude: number;
+  rmsAmplitude: number;
+}
+
+export interface SpeechCaptureDiagnostics {
+  requestedCleanupMode: SpeechCleanupMode;
+  appliedCleanupMode: SpeechCleanupMode;
+  fallbackUsed: boolean;
+  captureBackend: "persistent" | "spawn";
+  preRollMsRequested?: number;
+  preRollMsDelivered?: number;
+  postRollMsRequested?: number;
+  postRollMsDelivered?: number;
+  keydownToCaptureReadyMs?: number;
+  keyupToCaptureStoppedMs?: number;
+  raw: AudioSignalStats;
+  final: AudioSignalStats;
+}
+
+export interface WhisperTranscriptionDiagnostics {
+  runtimePath: string;
+  modelId: string;
+  modelPath: string;
+  audioDurationSeconds?: number;
+  chunked: boolean;
+  chunkCount: number;
+  blankChunkCount: number;
+}
+
+export interface SpeechPipelineDiagnostics {
+  recordedAt: number;
+  requestedCleanupMode: SpeechCleanupMode;
+  capture?: SpeechCaptureDiagnostics;
+  transcription?: WhisperTranscriptionDiagnostics;
+  lastError?: string;
 }
 
 export interface SpeechSample {
@@ -40,6 +85,7 @@ export interface AppSnapshot {
   lastTranscriptTruncated: boolean;
   settings: AppSettings;
   lastSpeechSample?: SpeechSample;
+  lastSpeechDiagnostics?: SpeechPipelineDiagnostics;
 }
 
 export interface SpeechRuntimeDiagnostics {
@@ -49,6 +95,40 @@ export interface SpeechRuntimeDiagnostics {
   pathEnv: string;
 }
 
+export type OverlayType = "listening" | "transcribing" | "message";
+
+export interface OverlayPayload {
+  type: OverlayType;
+  text?: string;
+}
+
+export interface ModelDownloadProgressPayload {
+  modelId: string;
+  percent: number;
+}
+
+export interface ModelListItem {
+  id: string;
+  name: string;
+  details: string;
+  installed: boolean;
+}
+
+export interface PermissionsSnapshot {
+  accessibility: boolean;
+  microphone: "granted" | "denied" | "restricted" | "not-determined" | "unknown";
+  hotkeyReady: boolean;
+  hotkeyMessage?: string;
+}
+
+export interface UpdateStatus {
+  enabled: boolean;
+  label: string;
+  canInstall: boolean;
+}
+
+export type PrivacyPane = "accessibility" | "microphone";
+
 export interface OnboardingState {
   completed: boolean;
   version: number;
@@ -57,6 +137,34 @@ export interface OnboardingState {
 }
 
 export type SettingsWindowMode = "settings" | "onboarding";
+
+export interface VoicebarApi {
+  getState(): Promise<AppSnapshot>;
+  getAppVersion(): Promise<string>;
+  saveSettings(settings: AppSettings): Promise<AppSnapshot>;
+  getUpdateState(): Promise<UpdateStatus>;
+  checkForUpdatesManual(): Promise<UpdateStatus>;
+  installDownloadedUpdate(): Promise<boolean>;
+  getOnboardingState(): Promise<OnboardingState>;
+  completeOnboarding(partial?: Partial<OnboardingState>): Promise<OnboardingState>;
+  resetOnboarding(): Promise<OnboardingState>;
+  openSettings(mode?: SettingsWindowMode): Promise<boolean>;
+  listModels(): Promise<ModelListItem[]>;
+  downloadModel(modelId: string): Promise<boolean>;
+  removeModel(modelId: string): Promise<boolean>;
+  startHotkeyCapture(): Promise<boolean>;
+  cancelHotkeyCapture(): Promise<boolean>;
+  requestMicrophonePermission(): Promise<boolean>;
+  openPrivacySettings(pane?: PrivacyPane): Promise<boolean>;
+  checkPermissions(): Promise<PermissionsSnapshot>;
+  getSpeechRuntimeDiagnostics(): Promise<SpeechRuntimeDiagnostics>;
+  installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics>;
+  onStateChanged(callback: (snapshot: AppSnapshot) => void): () => void;
+  onUpdateStateChanged(callback: (status: UpdateStatus) => void): () => void;
+  onOverlayUpdate(callback: (payload: OverlayPayload) => void): () => void;
+  onHotkeyCaptured(callback: (shortcut: KeyboardShortcut) => void): () => void;
+  onModelDownloadProgress(callback: (payload: ModelDownloadProgressPayload) => void): () => void;
+}
 
 export const ONBOARDING_VERSION = 1;
 
@@ -71,8 +179,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     modifiers: ["cmd", "shift"],
     display: "Shift + Command + R"
   },
-  activeModelId: "base.en",
-  autoPaste: true,
+  activeModelId: "small.en",
+  lowLatencyCaptureEnabled: true,
+  preRollMs: 350,
+  postRollMs: 220,
+  autoPaste: false,
+  speechCleanupMode: "balanced",
   restoreClipboard: true,
   autoUpdateEnabled: true
 };
@@ -97,6 +209,6 @@ export const MODEL_CATALOG: WhisperModel[] = [
     name: "Small (English)",
     downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
     fileName: "ggml-small.en.bin",
-    details: "Higher quality, slower"
+    details: "Best bundled quality, slower"
   }
 ];
