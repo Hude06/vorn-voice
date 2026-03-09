@@ -138,11 +138,11 @@ export class PasteService {
       if (end < trimmed.length) {
         const breakpoint = trimmed.lastIndexOf(" ", end);
         if (breakpoint > start + Math.floor(MAX_CHARS_PER_PASTE * 0.6)) {
-          end = breakpoint;
+          end = breakpoint + 1;
         }
       }
 
-      const chunk = trimmed.slice(start, end).trim();
+      const chunk = trimmed.slice(start, end);
       if (chunk) {
         chunks.push(chunk);
       }

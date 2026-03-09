@@ -53,7 +53,7 @@ export class HotkeyService {
     if (this.accelerator === accelerator) {
       this.shortcut = shortcut;
       this.pressed = false;
-      this.ensureHookStarted();
+      this.ensureHookStarted(true);
       return;
     }
 
@@ -75,7 +75,7 @@ export class HotkeyService {
     this.accelerator = accelerator;
     this.shortcut = shortcut;
     this.pressed = false;
-    this.ensureHookStarted();
+    this.ensureHookStarted(true);
   }
 
   setHandlers(onPress: HotkeyCallback, onRelease: HotkeyCallback): void {
@@ -100,10 +100,11 @@ export class HotkeyService {
     this.shortcut = undefined;
     this.pressed = false;
     this.captureCallback = undefined;
+    this.hookUnavailableMessage = undefined;
   }
 
   beginCapture(onCaptured: CaptureCallback): void {
-    this.ensureHookStarted();
+    this.ensureHookStarted(true);
     if (this.hookUnavailableMessage) {
       throw new Error(this.hookUnavailableMessage);
     }
@@ -111,12 +112,12 @@ export class HotkeyService {
   }
 
   probeHook(): string | undefined {
-    this.ensureHookStarted();
+    this.ensureHookStarted(true);
     return this.hookUnavailableMessage;
   }
 
   warmup(): void {
-    this.ensureHookStarted();
+    this.ensureHookStarted(true);
   }
 
   cancelCapture(): void {
@@ -237,9 +238,13 @@ export class HotkeyService {
     this.onPress?.();
   };
 
-  private ensureHookStarted(): void {
-    if (this.started || this.hookUnavailableMessage) {
+  private ensureHookStarted(forceRetry = false): void {
+    if (this.started || (this.hookUnavailableMessage && !forceRetry)) {
       return;
+    }
+
+    if (forceRetry) {
+      this.hookUnavailableMessage = undefined;
     }
 
     try {

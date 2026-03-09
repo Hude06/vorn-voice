@@ -112,7 +112,8 @@ export class SettingsStore {
       const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
       return {
         settings: parsed.settings ?? DEFAULT_SETTINGS,
-        onboarding: parsed.onboarding
+        onboarding: parsed.onboarding,
+        ui: parsed.ui
       };
     } catch {
       return {

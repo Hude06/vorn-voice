@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clipboard } from "electron";
 
 const clipboardState = {
   text: "",
@@ -88,6 +89,21 @@ describe("PasteService clipboard restore", () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(clipboardState.text).toBe("previous");
+  });
+
+  it("preserves boundary whitespace when chunking long transcripts", async () => {
+    const { PasteService } = await import("../src/main/services/pasteService");
+
+    const service = new PasteService();
+    const longTranscript = `${"a".repeat(3_998)} hello world`;
+
+    const pastePromise = service.pasteText(longTranscript, false);
+    await vi.runAllTimersAsync();
+    await pastePromise;
+
+    const writeCalls = (vi.mocked(clipboard.writeText).mock.calls as [string][]).map(([value]) => value);
+    expect(writeCalls.length).toBeGreaterThan(1);
+    expect(writeCalls.join("")).toBe(longTranscript.trim());
   });
 
   it("restores richer clipboard formats after paste", async () => {
