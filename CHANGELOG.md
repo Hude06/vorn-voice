@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-09
+
+- Replace the menu bar mark with a smaller icon-only waveform that fits cleanly within a single macOS status item slot.
+- Add a subtle animated recording waveform in the menu bar while speech capture is active, with a static idle waveform for non-recording states.
+- Move mode feedback from the menu bar title into the tray tooltip so the status item stays compact and modern.
+- Stop tray animation cleanly on app shutdown.
+
 ## 2026-03-08
 
 - Fix a hold-to-talk race where releasing the hotkey during the macOS microphone permission prompt could still start recording after permission was granted.

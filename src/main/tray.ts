@@ -1,9 +1,20 @@
 import { Menu, Tray, nativeImage } from "electron";
-import { AppSnapshot } from "../shared/types";
+import { AppMode, AppSnapshot } from "../shared/types";
 import { UpdateMenuState } from "./services/updateService";
+
+const TRAY_ICON_SIZE = 18;
+const RECORDING_ANIMATION_INTERVAL_MS = 220;
+
+type TrayIcons = {
+  idle: Electron.NativeImage;
+  recording: Electron.NativeImage[];
+};
 
 export class TrayController {
   private tray: Tray;
+  private readonly icons: TrayIcons = createTrayIcons();
+  private recordingAnimation?: ReturnType<typeof setInterval>;
+  private recordingFrameIndex = 0;
   private menuState: UpdateMenuState = {
     enabled: true,
     label: "Automatic updates enabled",
@@ -16,22 +27,26 @@ export class TrayController {
     private readonly onCheckForUpdates: () => void,
     private readonly onInstallUpdate: () => void
   ) {
-    const icon = createTrayIcon();
-    this.tray = new Tray(icon);
-    this.tray.setToolTip("Vorn Voice");
+    this.tray = new Tray(this.icons.idle);
+    this.applyMode("idle");
+    this.tray.setToolTip(buildToolTip("idle"));
 
     this.tray.on("click", onOpenSettings);
     this.rebuildMenu();
   }
 
   update(snapshot: AppSnapshot): void {
-    const mode = snapshot.mode[0].toUpperCase() + snapshot.mode.slice(1);
-    this.tray.setTitle(`Vorn Voice: ${mode}`);
+    this.applyMode(snapshot.mode);
+    this.tray.setToolTip(buildToolTip(snapshot.mode));
   }
 
   setUpdateMenuState(next: UpdateMenuState): void {
     this.menuState = next;
     this.rebuildMenu();
+  }
+
+  dispose(): void {
+    this.stopRecordingAnimation();
   }
 
   private rebuildMenu(): void {
@@ -54,37 +69,102 @@ export class TrayController {
 
     this.tray.setContextMenu(Menu.buildFromTemplate(items));
   }
+
+  private applyMode(mode: AppMode): void {
+    if (process.platform === "darwin") {
+      this.tray.setTitle("");
+    } else {
+      this.tray.setTitle(`Vorn Voice: ${formatMode(mode)}`);
+    }
+
+    if (mode === "listening") {
+      this.startRecordingAnimation();
+      return;
+    }
+
+    this.stopRecordingAnimation();
+    this.tray.setImage(this.icons.idle);
+  }
+
+  private startRecordingAnimation(): void {
+    if (this.recordingAnimation) {
+      return;
+    }
+
+    this.recordingFrameIndex = 0;
+    this.tray.setImage(this.icons.recording[this.recordingFrameIndex]);
+    this.recordingAnimation = setInterval(() => {
+      this.recordingFrameIndex = (this.recordingFrameIndex + 1) % this.icons.recording.length;
+      this.tray.setImage(this.icons.recording[this.recordingFrameIndex]);
+    }, RECORDING_ANIMATION_INTERVAL_MS);
+  }
+
+  private stopRecordingAnimation(): void {
+    if (!this.recordingAnimation) {
+      this.recordingFrameIndex = 0;
+      return;
+    }
+
+    clearInterval(this.recordingAnimation);
+    this.recordingAnimation = undefined;
+    this.recordingFrameIndex = 0;
+  }
 }
 
-function createTrayIcon() {
+function createTrayIcons(): TrayIcons {
+  return {
+    idle: createWaveformIcon([4.5, 7.5, 7.5, 4.5]),
+    recording: [
+      createWaveformIcon([4.5, 11, 7.5, 5]),
+      createWaveformIcon([7.5, 10.5, 5, 8.5]),
+      createWaveformIcon([5, 8, 11, 6]),
+      createWaveformIcon([8, 5.5, 10.5, 7])
+    ]
+  };
+}
+
+function createWaveformIcon(heights: number[]): Electron.NativeImage {
+  const barWidth = 1.8;
+  const gap = 1.35;
+  const radius = 0.9;
+  const totalWidth = heights.length * barWidth + (heights.length - 1) * gap;
+  const startX = (TRAY_ICON_SIZE - totalWidth) / 2;
+  const centerY = TRAY_ICON_SIZE / 2;
+  const rects = heights.map((height, index) => {
+    const x = startX + index * (barWidth + gap);
+    const y = centerY - height / 2;
+
+    return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth}" height="${height.toFixed(2)}" rx="${radius}" fill="black" />`;
+  }).join("");
   const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-      <path
-        d="M5.1 3.1h3.1L11 8l3-4.9h2.9L11 14.9 5.1 3.1Z"
-        fill="none"
-        stroke="black"
-        stroke-width="1.45"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M8.75 3.1 11 6.8"
-        fill="none"
-        stroke="black"
-        stroke-width="1.45"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
+    <svg xmlns="http://www.w3.org/2000/svg" width="${TRAY_ICON_SIZE}" height="${TRAY_ICON_SIZE}" viewBox="0 0 ${TRAY_ICON_SIZE} ${TRAY_ICON_SIZE}">
+      ${rects}
     </svg>
   `;
-
   const icon = nativeImage
     .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`)
-    .resize({ width: 18, height: 18 });
+    .resize({ width: TRAY_ICON_SIZE, height: TRAY_ICON_SIZE });
 
   if (process.platform === "darwin") {
     icon.setTemplateImage(true);
   }
 
   return icon;
+}
+
+function buildToolTip(mode: AppMode): string {
+  return `Vorn Voice - ${formatMode(mode)}`;
+}
+
+function formatMode(mode: AppMode): string {
+  switch (mode) {
+    case "idle":
+      return "Ready";
+    case "listening":
+      return "Recording";
+    case "transcribing":
+      return "Transcribing";
+    case "error":
+      return "Error";
+  }
 }

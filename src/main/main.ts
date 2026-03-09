@@ -118,6 +118,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  tray?.dispose();
   coordinator?.stop();
   updateService?.stop();
   unsubscribeUpdateState?.();
