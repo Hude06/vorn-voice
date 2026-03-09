@@ -14,6 +14,8 @@ extraResources:
     to: models
   - from: build/runtime/runtime-manifest.json
     to: runtime-manifest.json
+  - from: build/tray
+    to: tray
 mac:
   icon: build/icon.icns
   category: public.app-category.productivity

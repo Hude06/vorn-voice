@@ -1,9 +1,12 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Menu, Tray, nativeImage } from "electron";
 import { AppMode, AppSnapshot } from "../shared/types";
 import { UpdateMenuState } from "./services/updateService";
 
-const TRAY_ICON_SIZE = 18;
-const RECORDING_ANIMATION_INTERVAL_MS = 220;
+const RECORDING_ANIMATION_INTERVAL_MS = 120;
+const TRAY_ASSET_DIR = "tray";
+const RECORDING_FRAME_SEQUENCE = [0, 1, 2, 3, 2, 1] as const;
 
 type TrayIcons = {
   idle: Electron.NativeImage;
@@ -92,10 +95,10 @@ export class TrayController {
     }
 
     this.recordingFrameIndex = 0;
-    this.tray.setImage(this.icons.recording[this.recordingFrameIndex]);
+    this.setRecordingAnimationFrame();
     this.recordingAnimation = setInterval(() => {
-      this.recordingFrameIndex = (this.recordingFrameIndex + 1) % this.icons.recording.length;
-      this.tray.setImage(this.icons.recording[this.recordingFrameIndex]);
+      this.recordingFrameIndex = (this.recordingFrameIndex + 1) % RECORDING_FRAME_SEQUENCE.length;
+      this.setRecordingAnimationFrame();
     }, RECORDING_ANIMATION_INTERVAL_MS);
   }
 
@@ -109,41 +112,73 @@ export class TrayController {
     this.recordingAnimation = undefined;
     this.recordingFrameIndex = 0;
   }
+
+  private setRecordingAnimationFrame(): void {
+    const frameIndex = RECORDING_FRAME_SEQUENCE[this.recordingFrameIndex];
+    this.tray.setImage(this.icons.recording[frameIndex]);
+  }
 }
 
 function createTrayIcons(): TrayIcons {
   return {
-    idle: createWaveformIcon([4.5, 7.5, 7.5, 4.5]),
+    idle: loadTrayIcon("idleTemplate.png", [6, 10, 7]),
     recording: [
-      createWaveformIcon([4.5, 11, 7.5, 5]),
-      createWaveformIcon([7.5, 10.5, 5, 8.5]),
-      createWaveformIcon([5, 8, 11, 6]),
-      createWaveformIcon([8, 5.5, 10.5, 7])
+      loadTrayIcon("recording1Template.png", [7, 13, 8]),
+      loadTrayIcon("recording2Template.png", [9, 11, 6]),
+      loadTrayIcon("recording3Template.png", [6, 10, 9]),
+      loadTrayIcon("recording4Template.png", [10, 7, 12])
     ]
   };
 }
 
-function createWaveformIcon(heights: number[]): Electron.NativeImage {
-  const barWidth = 1.8;
-  const gap = 1.35;
-  const radius = 0.9;
-  const totalWidth = heights.length * barWidth + (heights.length - 1) * gap;
-  const startX = (TRAY_ICON_SIZE - totalWidth) / 2;
-  const centerY = TRAY_ICON_SIZE / 2;
-  const rects = heights.map((height, index) => {
-    const x = startX + index * (barWidth + gap);
-    const y = centerY - height / 2;
+function loadTrayIcon(fileName: string, fallbackHeights: number[]): Electron.NativeImage {
+  for (const candidate of getTrayIconCandidates(fileName)) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
 
-    return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth}" height="${height.toFixed(2)}" rx="${radius}" fill="black" />`;
+    const icon = nativeImage.createFromPath(candidate);
+    if (!icon.isEmpty()) {
+      if (process.platform === "darwin") {
+        icon.setTemplateImage(true);
+      }
+
+      return icon;
+    }
+  }
+
+  console.warn(`Tray icon asset could not be loaded: ${fileName}`);
+  return createFallbackWaveformIcon(fallbackHeights);
+}
+
+function getTrayIconCandidates(fileName: string): string[] {
+  return [
+    path.join(process.resourcesPath, TRAY_ASSET_DIR, fileName),
+    path.join(process.cwd(), "build", TRAY_ASSET_DIR, fileName),
+    path.join(__dirname, "..", "..", "build", TRAY_ASSET_DIR, fileName)
+  ];
+}
+
+function createFallbackWaveformIcon(heights: number[]): Electron.NativeImage {
+  const iconSize = 18;
+  const strokeWidth = 2.6;
+  const totalWidth = 8;
+  const startX = (iconSize - totalWidth) / 2;
+  const step = totalWidth / Math.max(1, heights.length - 1);
+  const centerY = iconSize / 2;
+  const lines = heights.map((height, index) => {
+    const x = startX + index * step;
+    const y1 = centerY - height / 2;
+    const y2 = centerY + height / 2;
+
+    return `<line x1="${x.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" />`;
   }).join("");
   const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${TRAY_ICON_SIZE}" height="${TRAY_ICON_SIZE}" viewBox="0 0 ${TRAY_ICON_SIZE} ${TRAY_ICON_SIZE}">
-      ${rects}
+    <svg xmlns="http://www.w3.org/2000/svg" width="${iconSize}" height="${iconSize}" viewBox="0 0 ${iconSize} ${iconSize}">
+      ${lines}
     </svg>
   `;
-  const icon = nativeImage
-    .createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`)
-    .resize({ width: TRAY_ICON_SIZE, height: TRAY_ICON_SIZE });
+  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
 
   if (process.platform === "darwin") {
     icon.setTemplateImage(true);
