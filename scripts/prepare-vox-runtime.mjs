@@ -12,7 +12,11 @@ const runtimeDir = path.join(runtimeRoot, "bin");
 const runtimeLibDir = path.join(runtimeRoot, "lib");
 const modelsDir = path.join(runtimeRoot, "models");
 const manifestPath = path.join(runtimeRoot, "runtime-manifest.json");
+const modelCatalogPath = path.join(root, "src", "shared", "modelCatalog.json");
 const MAX_REDIRECTS = 5;
+
+const modelCatalog = JSON.parse(await fs.readFile(modelCatalogPath, "utf8"));
+const bundledModels = resolveBundledModels(modelCatalog);
 
 await fs.mkdir(runtimeDir, { recursive: true });
 await fs.rm(runtimeLibDir, { recursive: true, force: true });
@@ -39,14 +43,6 @@ const binaries = [
     fixedCandidates: ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"],
     shellExecutable: "sox",
     missingMessage: "Unable to locate SoX to bundle the recorder runtime. Install SoX with Homebrew or set VOX_SOX_PATH to a sox executable."
-  }
-];
-
-const bundledModels = [
-  {
-    id: "base.en",
-    fileName: "ggml-base.en.bin",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
   }
 ];
 
@@ -114,6 +110,29 @@ async function resolveExecutablePath(envKeys, fixedCandidates, shellExecutable) 
   }
 
   return undefined;
+}
+
+function resolveBundledModels(config) {
+  const bundledModelIds = Array.isArray(config?.bundledModelIds) ? config.bundledModelIds : [];
+  const models = Array.isArray(config?.models) ? config.models : [];
+  const defaultModelId = typeof config?.defaultModelId === "string" ? config.defaultModelId : "";
+
+  if (!bundledModelIds.includes(defaultModelId)) {
+    throw new Error(`Default model ${defaultModelId || "<missing>"} must be bundled for packaged first run`);
+  }
+
+  return bundledModelIds.map((modelId) => {
+    const model = models.find((candidate) => candidate.id === modelId);
+    if (!model) {
+      throw new Error(`Bundled model ${modelId} is missing from ${modelCatalogPath}`);
+    }
+
+    return {
+      id: model.id,
+      fileName: model.fileName,
+      downloadUrl: model.downloadUrl
+    };
+  });
 }
 
 async function isExecutable(candidate) {

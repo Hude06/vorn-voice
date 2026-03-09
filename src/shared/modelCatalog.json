@@ -1,0 +1,29 @@
+{
+  "defaultModelId": "base.en",
+  "bundledModelIds": [
+    "base.en"
+  ],
+  "models": [
+    {
+      "id": "tiny.en",
+      "name": "Tiny (English)",
+      "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+      "fileName": "ggml-tiny.en.bin",
+      "details": "Fastest, lowest accuracy"
+    },
+    {
+      "id": "base.en",
+      "name": "Base (English)",
+      "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+      "fileName": "ggml-base.en.bin",
+      "details": "Balanced speed and quality. Bundled by default."
+    },
+    {
+      "id": "small.en",
+      "name": "Small (English)",
+      "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
+      "fileName": "ggml-small.en.bin",
+      "details": "Higher accuracy, slower download"
+    }
+  ]
+}

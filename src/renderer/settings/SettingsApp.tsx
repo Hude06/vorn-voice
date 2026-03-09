@@ -3,6 +3,8 @@ import type { ReactElement } from "react";
 import {
   AppSettings,
   AppSnapshot,
+  BUNDLED_MODEL_IDS,
+  DEFAULT_MODEL_ID,
   KeyboardShortcut,
   ModelListItem,
   OnboardingState,
@@ -731,7 +733,7 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
     <div className="flex flex-col gap-3">
       {onboardingStep === 0 ? (
         <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-          <SectionHeading title="Choose your model" text="Pick one installed model. Small English is the best bundled default if you want better quality." />
+          <SectionHeading title="Choose your model" text="Pick one installed model. Base English is bundled by default, and Small English is available if you want more accuracy." />
           <ModelPanel
             activeModelId={activeModelId}
             downloadModel={downloadModel}
@@ -912,7 +914,7 @@ function SettingsView(props: SettingsViewProps): ReactElement {
   return (
     <div className="flex flex-col gap-3">
       <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-        <SectionHeading title="Models" text="Only installed models can be selected. Install one first, then choose which model Vorn should use." />
+        <SectionHeading title="Models" text="Base English is bundled by default. Install Tiny or Small if you want a different speed or accuracy tradeoff." />
         <ModelPanel
           activeModelId={draft.activeModelId}
           downloadModel={downloadModel}
@@ -1090,8 +1092,6 @@ type ModelPanelProps = {
   removingModelId: string | null;
 };
 
-const RECOMMENDED_MODEL_ID = "small.en";
-
 type CleanupModeSelectorProps = {
   mode: SpeechCleanupMode;
   onChange: (mode: SpeechCleanupMode) => void;
@@ -1128,7 +1128,8 @@ function ModelPanel(props: ModelPanelProps): ReactElement {
       {models.map((model) => {
         const selected = model.installed && model.id === activeModelId;
         const busy = downloadModelId === model.id || removingModelId === model.id;
-        const recommended = model.id === RECOMMENDED_MODEL_ID;
+        const bundled = BUNDLED_MODEL_IDS.includes(model.id);
+        const defaultModel = model.id === DEFAULT_MODEL_ID;
         const stateLabel = selected ? "Selected" : model.installed ? "Installed" : "Install";
 
         return (
@@ -1136,7 +1137,8 @@ function ModelPanel(props: ModelPanelProps): ReactElement {
             <div className="flex items-start justify-between gap-3">
               <strong className="text-base">{model.name}</strong>
               <div className="flex flex-wrap justify-end gap-2">
-                {recommended ? <Badge variant="outline">Recommended</Badge> : null}
+                {defaultModel ? <Badge variant="outline">Bundled default</Badge> : null}
+                {bundled && !defaultModel ? <Badge variant="outline">Bundled</Badge> : null}
                 <Badge variant={selected || model.installed ? "secondary" : "outline"}>{stateLabel}</Badge>
               </div>
             </div>

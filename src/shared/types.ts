@@ -1,3 +1,5 @@
+import modelCatalog from "./modelCatalog.json";
+
 export type AppMode = "idle" | "listening" | "transcribing" | "error";
 
 export type Modifier = "cmd" | "shift" | "alt" | "ctrl";
@@ -79,6 +81,17 @@ export interface WhisperModel {
   fileName: string;
   details: string;
 }
+
+type ModelCatalogConfig = {
+  defaultModelId: string;
+  bundledModelIds: string[];
+  models: WhisperModel[];
+};
+
+const MODEL_CONFIG = modelCatalog as ModelCatalogConfig;
+
+export const DEFAULT_MODEL_ID = MODEL_CONFIG.defaultModelId;
+export const BUNDLED_MODEL_IDS = [...MODEL_CONFIG.bundledModelIds];
 
 export interface AppSnapshot {
   mode: AppMode;
@@ -183,7 +196,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     display: "Shift + Command + R"
   },
   hotkeyBehavior: "hold",
-  activeModelId: "base.en",
+  activeModelId: DEFAULT_MODEL_ID,
   lowLatencyCaptureEnabled: true,
   preRollMs: 350,
   postRollMs: 220,
@@ -193,26 +206,4 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoUpdateEnabled: true
 };
 
-export const MODEL_CATALOG: WhisperModel[] = [
-  {
-    id: "tiny.en",
-    name: "Tiny (English)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-    fileName: "ggml-tiny.en.bin",
-    details: "Fastest, lower accuracy"
-  },
-  {
-    id: "base.en",
-    name: "Base (English)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
-    fileName: "ggml-base.en.bin",
-    details: "Balanced speed and quality"
-  },
-  {
-    id: "small.en",
-    name: "Small (English)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
-    fileName: "ggml-small.en.bin",
-    details: "Best bundled quality, slower"
-  }
-];
+export const MODEL_CATALOG: WhisperModel[] = MODEL_CONFIG.models.map((model) => ({ ...model }));
