@@ -332,6 +332,28 @@ describe("AppCoordinator error mode behavior", () => {
     expect(harness.whisper.transcribe).toHaveBeenCalledTimes(1);
   });
 
+  it("does not start capture when release happens during microphone permission request", async () => {
+    const harness = createHarness();
+    harness.permissionService.getMicrophonePermissionStatus.mockReturnValue("not-determined");
+
+    let resolvePermission: (allowed: boolean) => void = () => undefined;
+    const permissionPromise = new Promise<boolean>((resolve) => {
+      resolvePermission = resolve;
+    });
+    harness.permissionService.requestMicrophonePermission.mockImplementation(() => permissionPromise);
+
+    await harness.press();
+    await waitForCoordinator();
+    await harness.release();
+
+    resolvePermission(true);
+    await waitForCoordinator();
+
+    expect(harness.audioCapture.startCapture).not.toHaveBeenCalled();
+    expect(harness.audioCapture.stopCapture).not.toHaveBeenCalled();
+    expect(harness.whisper.transcribe).not.toHaveBeenCalled();
+  });
+
   it("stops after startup when toggle mode receives a second press", async () => {
     const harness = createHarness({
       initialSettings: {

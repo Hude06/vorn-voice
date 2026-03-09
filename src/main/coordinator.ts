@@ -132,6 +132,7 @@ export class AppCoordinator {
     this.runToken += 1;
     const token = this.runToken;
     this.recordingStartedAt = Date.now();
+    this.isStartingCapture = true;
 
     let allowed = this.permissionService.getMicrophonePermissionStatus() === "granted";
     if (!allowed) {
@@ -139,15 +140,22 @@ export class AppCoordinator {
     }
 
     if (!allowed || token !== this.runToken) {
+      this.isStartingCapture = false;
       this.recordingStartedAt = undefined;
       this.stopPending = false;
       this.state.setMode("error", "Microphone permission is required");
       return;
     }
 
+    if (this.stopPending) {
+      this.isStartingCapture = false;
+      this.recordingStartedAt = undefined;
+      this.stopPending = false;
+      return;
+    }
+
     this.state.setMode("listening");
     this.overlay.show("listening", "Listening...");
-    this.isStartingCapture = true;
 
     try {
       await this.audioCapture.startCapture();
