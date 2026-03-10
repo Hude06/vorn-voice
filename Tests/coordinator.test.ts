@@ -80,11 +80,11 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
     pasteService,
     permissionService,
     press: async () => {
-      onPress?.();
+      await onPress?.();
       await waitForCoordinator();
     },
     release: async () => {
-      onRelease?.();
+      await onRelease?.();
       await waitForCoordinator();
     }
   };
@@ -291,7 +291,7 @@ describe("AppCoordinator error mode behavior", () => {
     expect(snapshot.lastTranscriptTruncated).toBe(true);
   });
 
-  it("runs onboarding dictation tests without auto-paste and returns transcript details", async () => {
+  it("verifies onboarding with the real hotkey flow and skips auto-paste", async () => {
     const harness = createHarness({
       initialSettings: {
         ...DEFAULT_SETTINGS,
@@ -300,8 +300,11 @@ describe("AppCoordinator error mode behavior", () => {
     });
     harness.permissionService.checkAccessibilityPermission.mockReturnValue(false);
 
-    await harness.coordinator.startOnboardingDictationTest();
-    const result = await harness.coordinator.finishOnboardingDictationTest();
+    harness.coordinator.armOnboardingVerification();
+    await harness.press();
+    await harness.release();
+
+    const result = harness.coordinator.getOnboardingVerificationState().result;
 
     expect(result).toEqual({
       transcript: "hello",
@@ -315,12 +318,18 @@ describe("AppCoordinator error mode behavior", () => {
     expect(harness.overlay.show).toHaveBeenCalledWith("message", "Test complete");
   });
 
-  it("surfaces microphone permission errors during onboarding test start", async () => {
+  it("marks onboarding verification as failed when microphone permission is denied", async () => {
     const harness = createHarness();
     harness.permissionService.getMicrophonePermissionStatus.mockReturnValue("denied");
     harness.permissionService.requestMicrophonePermission.mockResolvedValue(false);
 
-    await expect(harness.coordinator.startOnboardingDictationTest()).rejects.toThrow("Microphone permission is required");
+    harness.coordinator.armOnboardingVerification();
+    await harness.press();
+
+    expect(harness.coordinator.getOnboardingVerificationState()).toEqual(expect.objectContaining({
+      status: "failed",
+      errorMessage: "Microphone permission is required"
+    }));
     expect(harness.audioCapture.startCapture).not.toHaveBeenCalled();
   });
 

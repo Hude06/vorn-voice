@@ -34,7 +34,11 @@ describe("registerIpcHandlers settings sanitization", () => {
         on: vi.fn()
       },
       coordinator: {
-        updateSettings: vi.fn()
+        updateSettings: vi.fn(),
+        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        armOnboardingVerification: vi.fn(() => ({ status: "armed", shortcut: DEFAULT_SETTINGS.shortcut })),
+        resetOnboardingVerification: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        onOnboardingVerificationChanged: vi.fn(() => () => undefined)
       },
       hotkeyService: {
         beginCapture: vi.fn(),
@@ -109,7 +113,7 @@ describe("registerIpcHandlers settings sanitization", () => {
     }));
   });
 
-  it("registers onboarding test and onboarding update handlers", async () => {
+  it("registers onboarding verification and onboarding update handlers", async () => {
     const registeredHandlers = new Map<string, (...args: unknown[]) => unknown>();
     handleMock.mockImplementation((channel: string, handler: (...args: unknown[]) => unknown) => {
       registeredHandlers.set(channel, handler);
@@ -122,8 +126,10 @@ describe("registerIpcHandlers settings sanitization", () => {
       },
       coordinator: {
         updateSettings: vi.fn(),
-        startOnboardingDictationTest: vi.fn(async () => undefined),
-        finishOnboardingDictationTest: vi.fn(async () => ({ transcript: "hello", wordCount: 1 }))
+        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        armOnboardingVerification: vi.fn(() => ({ status: "armed", shortcut: DEFAULT_SETTINGS.shortcut })),
+        resetOnboardingVerification: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        onOnboardingVerificationChanged: vi.fn(() => () => undefined)
       },
       hotkeyService: {
         beginCapture: vi.fn(),
@@ -170,11 +176,14 @@ describe("registerIpcHandlers settings sanitization", () => {
     registerIpcHandlers(deps as never);
 
     await registeredHandlers.get(IPC_CHANNELS.onboardingUpdate)?.({}, { dictationVerified: true });
-    await registeredHandlers.get(IPC_CHANNELS.onboardingDictationTestStart)?.({});
-    await registeredHandlers.get(IPC_CHANNELS.onboardingDictationTestFinish)?.({});
+    await registeredHandlers.get(IPC_CHANNELS.onboardingVerificationGet)?.({});
+    await registeredHandlers.get(IPC_CHANNELS.onboardingVerificationArm)?.({});
+    await registeredHandlers.get(IPC_CHANNELS.onboardingVerificationReset)?.({});
 
     expect(deps.settingsStore.updateOnboarding).toHaveBeenCalledWith({ dictationVerified: true });
-    expect(deps.coordinator.startOnboardingDictationTest).toHaveBeenCalled();
-    expect(deps.coordinator.finishOnboardingDictationTest).toHaveBeenCalled();
+    expect(deps.coordinator.getOnboardingVerificationState).toHaveBeenCalled();
+    expect(deps.coordinator.armOnboardingVerification).toHaveBeenCalled();
+    expect(deps.coordinator.resetOnboardingVerification).toHaveBeenCalled();
+    expect(deps.coordinator.onOnboardingVerificationChanged).toHaveBeenCalled();
   });
 });

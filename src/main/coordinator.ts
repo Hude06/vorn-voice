@@ -7,7 +7,13 @@ import { PermissionService } from "./services/permissionService";
 import { SettingsStore } from "./services/settingsStore";
 import { WhisperService } from "./services/whisperService";
 import { OverlayWindow } from "./windows/overlayWindow";
-import { AppSettings, DEFAULT_SETTINGS, OnboardingDictationResult, SpeechPipelineDiagnostics } from "../shared/types";
+import {
+  AppSettings,
+  DEFAULT_SETTINGS,
+  OnboardingDictationResult,
+  OnboardingVerificationState,
+  SpeechPipelineDiagnostics
+} from "../shared/types";
 import { validateShortcut } from "../shared/shortcuts";
 import { computeWpm, countWords, MIN_SPEECH_SAMPLE_DURATION_MS } from "../shared/speechStats";
 import fs from "node:fs/promises";
@@ -20,6 +26,8 @@ type StopCaptureOptions = {
   shouldAutoPaste: boolean;
 };
 
+type OnboardingVerificationListener = (state: OnboardingVerificationState) => void;
+
 export class AppCoordinator {
   private isRecording = false;
   private isStartingCapture = false;
@@ -27,6 +35,8 @@ export class AppCoordinator {
   private runToken = 0;
   private recordingStartedAt?: number;
   private captureOrigin: CaptureOrigin | null = null;
+  private onboardingVerification: OnboardingVerificationState;
+  private readonly onboardingVerificationListeners = new Set<OnboardingVerificationListener>();
 
   constructor(
     private readonly state: AppState,
@@ -38,15 +48,17 @@ export class AppCoordinator {
     private readonly pasteService: PasteService,
     private readonly permissionService: PermissionService,
     private readonly overlay: OverlayWindow
-  ) {}
+  ) {
+    this.onboardingVerification = createOnboardingVerificationState(this.state.getSnapshot().settings.shortcut);
+  }
 
   start(): string | undefined {
     this.hotkey.setHandlers(
       () => {
-        void this.handlePressEvent();
+        void this.handlePressEvent().catch(() => undefined);
       },
       () => {
-        void this.handleReleaseEvent();
+        void this.handleReleaseEvent().catch(() => undefined);
       }
     );
 
@@ -95,6 +107,7 @@ export class AppCoordinator {
   }
 
   updateSettings(settings: AppSettings): void {
+    const previousSettings = this.state.getSnapshot().settings;
     const shortcutError = validateShortcut(settings.shortcut);
     if (shortcutError) {
       throw new Error(shortcutError);
@@ -110,52 +123,61 @@ export class AppCoordinator {
 
     this.store.save(settings);
     this.state.setSettings(settings);
+
+    if (
+      !sameShortcut(previousSettings.shortcut, settings.shortcut)
+      || previousSettings.activeModelId !== settings.activeModelId
+    ) {
+      this.resetOnboardingVerification();
+    } else {
+      this.syncOnboardingShortcut(settings.shortcut);
+    }
   }
 
-  async startOnboardingDictationTest(): Promise<void> {
-    await this.handleStart("onboarding");
+  getOnboardingVerificationState(): OnboardingVerificationState {
+    return { ...this.onboardingVerification };
   }
 
-  async finishOnboardingDictationTest(): Promise<OnboardingDictationResult> {
-    if (this.isStartingCapture) {
-      throw new Error("Wait for the test recording to start before stopping it.");
-    }
-
-    if (!this.isRecording || this.captureOrigin !== "onboarding") {
-      throw new Error("Start a test dictation before stopping it.");
-    }
-
-    return this.handleStop({
-      origin: "onboarding",
-      overlaySuccessMessage: "Test complete",
-      shouldAutoPaste: false
+  armOnboardingVerification(): OnboardingVerificationState {
+    this.updateOnboardingVerification({
+      status: "armed",
+      shortcut: this.state.getSnapshot().settings.shortcut,
+      result: undefined,
+      errorMessage: undefined
     });
+
+    return this.getOnboardingVerificationState();
+  }
+
+  resetOnboardingVerification(): OnboardingVerificationState {
+    this.updateOnboardingVerification(createOnboardingVerificationState(this.state.getSnapshot().settings.shortcut));
+    return this.getOnboardingVerificationState();
+  }
+
+  onOnboardingVerificationChanged(listener: OnboardingVerificationListener): () => void {
+    this.onboardingVerificationListeners.add(listener);
+    return () => {
+      this.onboardingVerificationListeners.delete(listener);
+    };
   }
 
   private async handlePressEvent(): Promise<void> {
-    if (this.captureOrigin === "onboarding") {
-      return;
-    }
-
     const behavior = this.state.getSnapshot().settings.hotkeyBehavior;
+    const activeOrigin = this.captureOrigin ?? (this.onboardingVerification.status === "armed" ? "onboarding" : "hotkey");
 
     if (behavior === "toggle" && (this.isRecording || this.isStartingCapture)) {
       try {
-        await this.handleStop(stopOptionsForOrigin("hotkey"));
+        await this.handleStop(stopOptionsForOrigin(this.captureOrigin ?? activeOrigin));
       } catch {
         // state and overlay are already updated inside handleStop
       }
       return;
     }
 
-    await this.handleStart("hotkey");
+    await this.handleStart(activeOrigin);
   }
 
   private async handleReleaseEvent(): Promise<void> {
-    if (this.captureOrigin === "onboarding") {
-      return;
-    }
-
     const behavior = this.state.getSnapshot().settings.hotkeyBehavior;
 
     if (behavior === "toggle") {
@@ -163,7 +185,7 @@ export class AppCoordinator {
     }
 
     try {
-      await this.handleStop(stopOptionsForOrigin("hotkey"));
+      await this.handleStop(stopOptionsForOrigin(this.captureOrigin ?? "hotkey"));
     } catch {
       // state and overlay are already updated inside handleStop
     }
@@ -195,6 +217,11 @@ export class AppCoordinator {
       this.captureOrigin = null;
       this.state.setMode("error", "Microphone permission is required");
       if (origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "failed",
+          result: undefined,
+          errorMessage: "Microphone permission is required"
+        });
         throw new Error("Microphone permission is required");
       }
       return;
@@ -211,6 +238,13 @@ export class AppCoordinator {
     this.captureOrigin = origin;
     this.state.setMode("listening");
     this.overlay.show("listening", "Listening...");
+    if (origin === "onboarding") {
+      this.updateOnboardingVerification({
+        status: "listening",
+        result: undefined,
+        errorMessage: undefined
+      });
+    }
 
     try {
       await this.audioCapture.startCapture();
@@ -230,6 +264,11 @@ export class AppCoordinator {
       this.overlay.show("message", message);
       this.overlay.hide(1200);
       if (origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "failed",
+          result: undefined,
+          errorMessage: message
+        });
         throw new Error(message);
       }
     }
@@ -261,6 +300,13 @@ export class AppCoordinator {
       this.isRecording = false;
       this.state.setMode("transcribing");
       this.overlay.show("transcribing", "Transcribing...");
+      if (options.origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "transcribing",
+          result: undefined,
+          errorMessage: undefined
+        });
+      }
     } catch (error) {
       this.isRecording = false;
       this.recordingStartedAt = undefined;
@@ -280,6 +326,13 @@ export class AppCoordinator {
         this.overlay.show("message", message);
       }
       this.overlay.hide(1200);
+      if (options.origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "failed",
+          result: undefined,
+          errorMessage: message
+        });
+      }
       throw new Error(message);
     }
 
@@ -327,7 +380,7 @@ export class AppCoordinator {
       }
       this.overlay.hide(900);
 
-      return {
+      const result = {
         transcript,
         wordCount: words,
         durationMs,
@@ -337,6 +390,16 @@ export class AppCoordinator {
           ? this.permissionService.checkAccessibilityPermission(false)
           : true
       };
+
+      if (options.origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "passed",
+          result,
+          errorMessage: undefined
+        });
+      }
+
+      return result;
     } catch (error) {
       const message = toErrorMessage(error, "Transcription failed");
       this.state.setSpeechDiagnostics({
@@ -354,10 +417,35 @@ export class AppCoordinator {
         this.overlay.show("message", message);
       }
       this.overlay.hide(1400);
+      if (options.origin === "onboarding") {
+        this.updateOnboardingVerification({
+          status: "failed",
+          result: undefined,
+          errorMessage: message
+        });
+      }
       throw new Error(message);
     } finally {
       await fs.unlink(audioPath).catch(() => undefined);
     }
+  }
+
+  private syncOnboardingShortcut(shortcut: AppSettings["shortcut"]): void {
+    this.updateOnboardingVerification({ shortcut });
+  }
+
+  private updateOnboardingVerification(next: OnboardingVerificationState): void;
+  private updateOnboardingVerification(next: Partial<OnboardingVerificationState>): void;
+  private updateOnboardingVerification(next: OnboardingVerificationState | Partial<OnboardingVerificationState>): void {
+    this.onboardingVerification = {
+      ...this.onboardingVerification,
+      ...next
+    };
+
+    const snapshot = this.getOnboardingVerificationState();
+    this.onboardingVerificationListeners.forEach((listener) => {
+      listener(snapshot);
+    });
   }
 
   private async resolveTranscriptionModelPath(modelId: string): Promise<string> {
@@ -387,6 +475,13 @@ function stopOptionsForOrigin(origin: CaptureOrigin): StopCaptureOptions {
     origin,
     overlaySuccessMessage: "Transcribed",
     shouldAutoPaste: true
+  };
+}
+
+function createOnboardingVerificationState(shortcut: AppSettings["shortcut"]): OnboardingVerificationState {
+  return {
+    status: "idle",
+    shortcut
   };
 }
 

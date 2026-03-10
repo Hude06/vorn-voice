@@ -152,7 +152,7 @@ export interface OnboardingState {
   dictationVerified?: boolean;
   dictationVerifiedAt?: number;
   verifiedModelId?: string;
-  selectedModelId?: string;
+  verifiedShortcut?: KeyboardShortcut;
 }
 
 export interface OnboardingDictationResult {
@@ -162,6 +162,15 @@ export interface OnboardingDictationResult {
   modelId: string;
   autoPasteEnabled: boolean;
   accessibilityReady: boolean;
+}
+
+export type OnboardingVerificationStatus = "idle" | "armed" | "listening" | "transcribing" | "passed" | "failed";
+
+export interface OnboardingVerificationState {
+  status: OnboardingVerificationStatus;
+  shortcut: KeyboardShortcut;
+  result?: OnboardingDictationResult;
+  errorMessage?: string;
 }
 
 export type SettingsWindowMode = "settings" | "onboarding";
@@ -177,6 +186,9 @@ export interface VoicebarApi {
   updateOnboardingState(partial?: Partial<OnboardingState>): Promise<OnboardingState>;
   completeOnboarding(partial?: Partial<OnboardingState>): Promise<OnboardingState>;
   resetOnboarding(): Promise<OnboardingState>;
+  getOnboardingVerificationState(): Promise<OnboardingVerificationState>;
+  armOnboardingVerification(): Promise<OnboardingVerificationState>;
+  resetOnboardingVerification(): Promise<OnboardingVerificationState>;
   openSettings(mode?: SettingsWindowMode): Promise<boolean>;
   listModels(): Promise<ModelListItem[]>;
   downloadModel(modelId: string): Promise<boolean>;
@@ -188,9 +200,8 @@ export interface VoicebarApi {
   checkPermissions(): Promise<PermissionsSnapshot>;
   getSpeechRuntimeDiagnostics(): Promise<SpeechRuntimeDiagnostics>;
   installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics>;
-  startOnboardingDictationTest(): Promise<boolean>;
-  finishOnboardingDictationTest(): Promise<OnboardingDictationResult>;
   onStateChanged(callback: (snapshot: AppSnapshot) => void): () => void;
+  onOnboardingVerificationChanged(callback: (state: OnboardingVerificationState) => void): () => void;
   onUpdateStateChanged(callback: (status: UpdateStatus) => void): () => void;
   onOverlayUpdate(callback: (payload: OverlayPayload) => void): () => void;
   onHotkeyCaptured(callback: (shortcut: KeyboardShortcut) => void): () => void;

@@ -4,10 +4,10 @@ import {
   AppSettings,
   AppSnapshot,
   KeyboardShortcut,
-  OnboardingDictationResult,
   ModelDownloadProgressPayload,
   ModelListItem,
   OnboardingState,
+  OnboardingVerificationState,
   OverlayPayload,
   PrivacyPane,
   PermissionsSnapshot,
@@ -48,6 +48,15 @@ const api: VoicebarApi = {
   resetOnboarding(): Promise<OnboardingState> {
     return ipcRenderer.invoke(IPC_CHANNELS.onboardingReset);
   },
+  getOnboardingVerificationState(): Promise<OnboardingVerificationState> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingVerificationGet);
+  },
+  armOnboardingVerification(): Promise<OnboardingVerificationState> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingVerificationArm);
+  },
+  resetOnboardingVerification(): Promise<OnboardingVerificationState> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingVerificationReset);
+  },
   openSettings(mode?: SettingsWindowMode): Promise<boolean> {
     return ipcRenderer.invoke(IPC_CHANNELS.settingsOpen, mode);
   },
@@ -81,17 +90,18 @@ const api: VoicebarApi = {
   installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics> {
     return ipcRenderer.invoke(IPC_CHANNELS.speechRuntimeInstall);
   },
-  startOnboardingDictationTest(): Promise<boolean> {
-    return ipcRenderer.invoke(IPC_CHANNELS.onboardingDictationTestStart);
-  },
-  finishOnboardingDictationTest(): Promise<OnboardingDictationResult> {
-    return ipcRenderer.invoke(IPC_CHANNELS.onboardingDictationTestFinish);
-  },
   onStateChanged(callback: (snapshot: AppSnapshot) => void): () => void {
     const listener = (_event: Electron.IpcRendererEvent, payload: AppSnapshot) => callback(payload);
     ipcRenderer.on(IPC_CHANNELS.stateChanged, listener);
     return () => {
       ipcRenderer.off(IPC_CHANNELS.stateChanged, listener);
+    };
+  },
+  onOnboardingVerificationChanged(callback: (state: OnboardingVerificationState) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, payload: OnboardingVerificationState) => callback(payload);
+    ipcRenderer.on(IPC_CHANNELS.onboardingVerificationChanged, listener);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.onboardingVerificationChanged, listener);
     };
   },
   onUpdateStateChanged(callback: (status: UpdateStatus) => void): () => void {

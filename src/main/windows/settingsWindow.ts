@@ -22,9 +22,9 @@ export class SettingsWindow {
     this.currentMode = mode;
 
     this.window = new BrowserWindow({
-      width: 1120,
-      height: 780,
-      minWidth: 960,
+      width: 1280,
+      height: 860,
+      minWidth: 1100,
       minHeight: 640,
       title: titleForMode(mode),
       webPreferences: {

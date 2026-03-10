@@ -64,6 +64,12 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.onboardingReset, () => deps.settingsStore.resetOnboarding());
 
+  ipcMain.handle(IPC_CHANNELS.onboardingVerificationGet, () => deps.coordinator.getOnboardingVerificationState());
+
+  ipcMain.handle(IPC_CHANNELS.onboardingVerificationArm, () => deps.coordinator.armOnboardingVerification());
+
+  ipcMain.handle(IPC_CHANNELS.onboardingVerificationReset, () => deps.coordinator.resetOnboardingVerification());
+
   ipcMain.handle(IPC_CHANNELS.hotkeyCaptureStart, () => {
     deps.hotkeyService.beginCapture((shortcut) => {
       BrowserWindow.getAllWindows().forEach((window) => {
@@ -123,16 +129,15 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.speechRuntimeInstall, async () => deps.whisperService.installRuntime());
 
-  ipcMain.handle(IPC_CHANNELS.onboardingDictationTestStart, async () => {
-    await deps.coordinator.startOnboardingDictationTest();
-    return true;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.onboardingDictationTestFinish, () => deps.coordinator.finishOnboardingDictationTest());
-
   deps.appState.on("changed", (snapshot) => {
     BrowserWindow.getAllWindows().forEach((window) => {
       safeSend(window.webContents, IPC_CHANNELS.stateChanged, snapshot);
+    });
+  });
+
+  deps.coordinator.onOnboardingVerificationChanged((verificationState) => {
+    BrowserWindow.getAllWindows().forEach((window) => {
+      safeSend(window.webContents, IPC_CHANNELS.onboardingVerificationChanged, verificationState);
     });
   });
 

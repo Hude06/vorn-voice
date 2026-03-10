@@ -177,9 +177,10 @@ export class SettingsStore {
   }
 
   private normalizeOnboarding(onboarding?: OnboardingState): OnboardingState {
+    const { selectedModelId: _selectedModelId, ...persistedOnboarding } = (onboarding ?? {}) as OnboardingState & { selectedModelId?: string };
     const normalized: OnboardingState = {
       ...DEFAULT_ONBOARDING_STATE,
-      ...onboarding,
+      ...persistedOnboarding,
       version: onboarding?.version ?? ONBOARDING_VERSION
     };
 
@@ -190,6 +191,7 @@ export class SettingsStore {
         dictationVerified: false,
         dictationVerifiedAt: undefined,
         verifiedModelId: undefined,
+        verifiedShortcut: undefined,
         version: ONBOARDING_VERSION,
         completedAt: undefined
       };
@@ -198,6 +200,7 @@ export class SettingsStore {
     if (!normalized.dictationVerified) {
       normalized.dictationVerifiedAt = undefined;
       normalized.verifiedModelId = undefined;
+      normalized.verifiedShortcut = undefined;
     }
 
     return normalized;

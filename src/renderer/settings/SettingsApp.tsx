@@ -7,8 +7,8 @@ import {
   DEFAULT_MODEL_ID,
   KeyboardShortcut,
   ModelListItem,
-  OnboardingDictationResult,
   OnboardingState,
+  OnboardingVerificationState,
   PermissionsSnapshot,
   SpeechCleanupMode,
   SpeechPipelineDiagnostics,
@@ -58,6 +58,7 @@ const ONBOARDING_STEPS = [
 const CARD_BASE_CLASS = "rounded-2xl border-[rgb(var(--border))] bg-[rgb(var(--card))]";
 const SUB_PANEL_CLASS = "rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-4";
 const TOKEN_BADGE_CLASS = "rounded-full bg-[#151515] text-[rgb(var(--muted-foreground))]";
+const FULLSCREEN_CONTENT_WIDTH_CLASS = "w-full max-w-[min(1500px,calc(100vw-24px))] lg:max-w-[min(1540px,calc(100vw-56px))]";
 
 export function SettingsApp(): ReactElement {
   const voicebar = getVoicebarApi();
@@ -81,9 +82,7 @@ export function SettingsApp(): ReactElement {
   const [updateState, setUpdateState] = useState<UpdateStatus | null>(null);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
   const [installingUpdate, setInstallingUpdate] = useState(false);
-  const [onboardingTestRunning, setOnboardingTestRunning] = useState(false);
-  const [onboardingTestStopping, setOnboardingTestStopping] = useState(false);
-  const [onboardingTestResult, setOnboardingTestResult] = useState<OnboardingDictationResult | null>(null);
+  const [onboardingVerification, setOnboardingVerification] = useState<OnboardingVerificationState | null>(null);
   const draftRef = useRef<AppSettings | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -92,7 +91,7 @@ export function SettingsApp(): ReactElement {
   const lastSavedSignatureRef = useRef<string | null>(null);
   const requestSaveRef = useRef<(nextSettings: AppSettings, options?: { statusText?: string; toastText?: string }) => Promise<boolean>>(async () => false);
 
-  const ready = Boolean(snapshot && draft && onboarding);
+  const ready = Boolean(snapshot && draft && onboarding && onboardingVerification);
   const installedModels = useMemo(() => models.filter((model) => model.installed), [models]);
   const activeModel = useMemo(
     () => models.find((model) => model.id === draft?.activeModelId),
@@ -105,7 +104,11 @@ export function SettingsApp(): ReactElement {
   const hotkeyReady = permissionState?.hotkeyReady !== false;
   const dictationTestReady = Boolean(activeModelInstalled && runtimeReady && microphoneGranted && hotkeyReady);
   const setupReady = Boolean(dictationTestReady && accessibilityReady);
-  const onboardingVerified = Boolean(onboarding?.dictationVerified && onboarding.verifiedModelId === draft?.activeModelId);
+  const onboardingVerified = Boolean(
+    onboarding?.dictationVerified
+    && onboarding.verifiedModelId === draft?.activeModelId
+    && sameShortcut(onboarding.verifiedShortcut, draft?.shortcut)
+  );
   const completeReady = Boolean(setupReady && onboardingVerified);
 
   const clearAutosaveTimer = () => {
@@ -142,9 +145,10 @@ export function SettingsApp(): ReactElement {
 
     const bootstrap = async () => {
       try {
-        const [critical, onboardingState, currentAppVersion, currentUpdateState] = await Promise.all([
+        const [critical, onboardingState, verificationState, currentAppVersion, currentUpdateState] = await Promise.all([
           loadCriticalSettingsData(voicebar),
           withTimeout(voicebar.getOnboardingState(), 5000, "Onboarding"),
+          withTimeout(voicebar.getOnboardingVerificationState(), 5000, "Onboarding verification"),
           withTimeout(voicebar.getAppVersion(), 5000, "App version"),
           withTimeout(voicebar.getUpdateState(), 5000, "Update status")
         ]);
@@ -160,6 +164,7 @@ export function SettingsApp(): ReactElement {
         setDraft(critical.snapshot.settings);
         setModels(critical.models);
         setOnboarding(onboardingState);
+        setOnboardingVerification(verificationState);
         setAppVersion(currentAppVersion);
         setUpdateState(currentUpdateState);
         setWindowMode(onboardingState.completed ? parseWindowMode() : "onboarding");
@@ -220,6 +225,14 @@ export function SettingsApp(): ReactElement {
       setUpdateState(nextUpdateState);
     });
 
+    const unsubscribeOnboardingVerification = voicebar.onOnboardingVerificationChanged((nextVerificationState) => {
+      if (cancelled) {
+        return;
+      }
+
+      setOnboardingVerification(nextVerificationState);
+    });
+
     const refreshOnFocus = () => {
       void refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, false);
     };
@@ -231,6 +244,7 @@ export function SettingsApp(): ReactElement {
       unsubscribeState();
       unsubscribeCaptured();
       unsubscribeUpdateState();
+      unsubscribeOnboardingVerification();
       window.removeEventListener("focus", refreshOnFocus);
       clearAutosaveTimer();
       if (toastTimerRef.current !== null) {
@@ -245,6 +259,97 @@ export function SettingsApp(): ReactElement {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  useEffect(() => {
+    if (!voicebar || windowMode !== "onboarding" || onboardingStep !== ONBOARDING_STEPS.length - 1 || !dictationTestReady) {
+      return;
+    }
+
+    if (onboardingVerification?.status === "listening" || onboardingVerification?.status === "transcribing") {
+      return;
+    }
+
+    if (onboardingVerified && onboardingVerification?.status === "passed") {
+      return;
+    }
+
+    void withTimeout(voicebar.armOnboardingVerification(), 5000, "Arm onboarding verification")
+      .then((nextVerification) => {
+        setOnboardingVerification(nextVerification);
+      })
+      .catch((error) => {
+        setStatus({ tone: "danger", text: errorToMessage(error) });
+      });
+  }, [voicebar, windowMode, onboardingStep, dictationTestReady, onboardingVerification?.status, onboardingVerified]);
+
+  useEffect(() => {
+    if (!voicebar || !onboardingVerification) {
+      return;
+    }
+
+    const onVerificationStep = windowMode === "onboarding" && onboardingStep === ONBOARDING_STEPS.length - 1;
+    if (onVerificationStep || onboardingVerification.status === "idle" || onboardingVerification.status === "passed") {
+      return;
+    }
+
+    void voicebar.resetOnboardingVerification()
+      .then((nextVerification) => {
+        setOnboardingVerification(nextVerification);
+      })
+      .catch(() => undefined);
+  }, [voicebar, onboardingVerification, onboardingStep, windowMode]);
+
+  useEffect(() => {
+    if (!onboardingVerification || !onboarding || windowMode !== "onboarding") {
+      return;
+    }
+
+    if (onboardingVerification.status === "passed" && onboardingVerification.result) {
+      if (onboardingVerified) {
+        return;
+      }
+
+      void updateOnboardingState({
+        dictationVerified: true,
+        dictationVerifiedAt: Date.now(),
+        verifiedModelId: onboardingVerification.result.modelId,
+        verifiedShortcut: onboardingVerification.shortcut
+      })
+        .then(() => {
+          setStatus({
+            tone: "success",
+            text: onboardingVerification.result?.autoPasteEnabled && !onboardingVerification.result.accessibilityReady
+              ? "Test passed. Dictation works, but auto-paste still needs Accessibility access."
+              : "Test passed. Finish setup when you are ready."
+          });
+        })
+        .catch((error) => {
+          setStatus({ tone: "danger", text: errorToMessage(error) });
+        });
+      return;
+    }
+
+    if (onboardingVerification.status === "failed") {
+      if (onboarding.dictationVerified) {
+        setOnboarding((current) => current ? {
+          ...current,
+          dictationVerified: false,
+          dictationVerifiedAt: undefined,
+          verifiedModelId: undefined,
+          verifiedShortcut: undefined
+        } : current);
+        void updateOnboardingState({
+          dictationVerified: false,
+          dictationVerifiedAt: undefined,
+          verifiedModelId: undefined,
+          verifiedShortcut: undefined
+        }).catch(() => undefined);
+      }
+      if (onboardingVerification.errorMessage) {
+        setStatus({ tone: "danger", text: onboardingVerification.errorMessage });
+      }
+    }
+  }, [onboardingVerification, onboarding, windowMode, onboardingVerified]);
 
   useEffect(() => {
     if (windowMode !== "settings" || !draft) {
@@ -433,6 +538,7 @@ export function SettingsApp(): ReactElement {
 
   const updateDraft = (recipe: (current: AppSettings) => AppSettings, options: DraftUpdateOptions = {}) => {
     let nextDraft: AppSettings | null = null;
+    let didChangeVerificationInputs = false;
 
     setDraft((current) => {
       if (!current) {
@@ -445,6 +551,7 @@ export function SettingsApp(): ReactElement {
       }
 
       nextDraft = updated;
+      didChangeVerificationInputs = current.activeModelId !== updated.activeModelId || !sameShortcut(current.shortcut, updated.shortcut);
       draftRef.current = updated;
       return updated;
     });
@@ -452,6 +559,23 @@ export function SettingsApp(): ReactElement {
     if (nextDraft && windowMode === "settings") {
       skipAutosaveRef.current = false;
       nextAutosaveDelayRef.current = options.immediateSave ? 0 : AUTOSAVE_DELAY_MS;
+    }
+
+    if (nextDraft && windowMode === "onboarding" && didChangeVerificationInputs) {
+      const verificationReset = {
+        dictationVerified: false,
+        dictationVerifiedAt: undefined,
+        verifiedModelId: undefined,
+        verifiedShortcut: undefined
+      } satisfies Partial<OnboardingState>;
+
+      setOnboarding((current) => current ? { ...current, ...verificationReset } : current);
+      void voicebar.resetOnboardingVerification()
+        .then((nextVerification) => {
+          setOnboardingVerification(nextVerification);
+        })
+        .catch(() => undefined);
+      void updateOnboardingState(verificationReset).catch(() => undefined);
     }
   };
 
@@ -495,57 +619,6 @@ export function SettingsApp(): ReactElement {
     }
   };
 
-  const startOnboardingTest = async () => {
-    if (!dictationTestReady) {
-      setStatus({ tone: "warning", text: "Finish the dictation essentials before running the test." });
-      return;
-    }
-
-    setOnboardingTestResult(null);
-    setOnboardingTestRunning(true);
-    setOnboardingTestStopping(false);
-
-    try {
-      await withTimeout(voicebar.startOnboardingDictationTest(), 10000, "Start test dictation");
-      setStatus({ tone: "neutral", text: "Speak a short sentence, then click Stop and transcribe." });
-    } catch (error) {
-      setOnboardingTestRunning(false);
-      setStatus({ tone: "danger", text: errorToMessage(error) });
-    }
-  };
-
-  const stopOnboardingTest = async () => {
-    setOnboardingTestStopping(true);
-
-    try {
-      const result = await withTimeout(voicebar.finishOnboardingDictationTest(), 30000, "Finish test dictation");
-      setOnboardingTestResult(result);
-      await updateOnboardingState({
-        dictationVerified: true,
-        dictationVerifiedAt: Date.now(),
-        verifiedModelId: result.modelId,
-        selectedModelId: result.modelId
-      });
-      setStatus({
-        tone: "success",
-        text: result.autoPasteEnabled && !result.accessibilityReady
-          ? "Test passed. Dictation works, but auto-paste still needs Accessibility access."
-          : "Test passed. Finish setup when you are ready."
-      });
-    } catch (error) {
-      setOnboardingTestResult(null);
-      await updateOnboardingState({
-        dictationVerified: false,
-        dictationVerifiedAt: undefined,
-        verifiedModelId: undefined
-      });
-      setStatus({ tone: "danger", text: errorToMessage(error) });
-    } finally {
-      setOnboardingTestRunning(false);
-      setOnboardingTestStopping(false);
-    }
-  };
-
   const finishOnboarding = async () => {
     if (!setupReady) {
       setStatus({ tone: "warning", text: "Finish the setup checklist before continuing." });
@@ -559,12 +632,16 @@ export function SettingsApp(): ReactElement {
 
     setCompletingOnboarding(true);
     try {
-      await saveCurrentDraft("Saved your setup.");
+      const saved = await saveCurrentDraft("Saved your setup.");
+      if (!saved) {
+        return;
+      }
+
       const nextOnboarding = await voicebar.completeOnboarding({
-        selectedModelId: draft.activeModelId,
         dictationVerified: true,
         dictationVerifiedAt: onboarding.dictationVerifiedAt ?? Date.now(),
-        verifiedModelId: draft.activeModelId
+        verifiedModelId: draft.activeModelId,
+        verifiedShortcut: draft.shortcut
       });
       setOnboarding(nextOnboarding);
       setWindowMode("settings");
@@ -578,8 +655,12 @@ export function SettingsApp(): ReactElement {
 
   const resetOnboarding = async () => {
     try {
-      const nextOnboarding = await voicebar.resetOnboarding();
+      const [nextOnboarding, nextVerification] = await Promise.all([
+        voicebar.resetOnboarding(),
+        voicebar.resetOnboardingVerification()
+      ]);
       setOnboarding(nextOnboarding);
+      setOnboardingVerification(nextVerification);
       setWindowMode("onboarding");
       setOnboardingStep(0);
       setStatus({ tone: "neutral", text: "Setup restarted." });
@@ -590,8 +671,8 @@ export function SettingsApp(): ReactElement {
 
   return (
     <Shell>
-      <div className="grid w-full max-w-[1380px] items-start gap-4 p-3 md:gap-6 md:p-6 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="top-6 flex max-h-none flex-col gap-4 overflow-visible rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:sticky md:max-h-[calc(100vh-48px)] md:overflow-auto md:p-7">
+      <div className={cn("mx-auto grid min-h-screen items-start gap-4 px-3 py-3 md:gap-6 md:px-6 md:py-6 xl:grid-cols-[312px_minmax(0,1fr)]", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
+        <aside className="flex flex-col gap-4 self-start rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:p-7 xl:sticky xl:top-6">
           <div className="flex flex-col gap-2.5">
             <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Vorn Voice</span>
             <h1 className="text-3xl leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
@@ -642,7 +723,7 @@ export function SettingsApp(): ReactElement {
           )}
         </aside>
 
-        <main className="flex flex-col gap-5 pb-6 pt-0 md:pb-6 md:pt-2">
+        <main className="min-w-0 flex flex-col gap-5 pb-6 pt-0 md:pt-2 xl:pb-12">
           {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
           <Card className="rounded-2xl border-[#2f2f2f] bg-[#151515]">
             <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -668,7 +749,7 @@ export function SettingsApp(): ReactElement {
               beginHotkeyCapture={beginHotkeyCapture}
               cancelHotkeyCapture={cancelHotkeyCapture}
               capturePending={capturePending}
-              completeDisabled={!completeReady || completingOnboarding || saving || onboardingTestRunning || onboardingTestStopping}
+              completeDisabled={!completeReady || completingOnboarding || saving}
               completingOnboarding={completingOnboarding}
               dictationTestReady={dictationTestReady}
               draft={draft}
@@ -679,10 +760,8 @@ export function SettingsApp(): ReactElement {
               installingRuntime={installingRuntime}
               microphoneGranted={microphoneGranted}
               models={models}
-              onboardingTestResult={onboardingTestResult}
-              onboardingTestRunning={onboardingTestRunning}
-              onboardingTestStopping={onboardingTestStopping}
               onboardingStep={onboardingStep}
+              onboardingVerification={onboardingVerification!}
               onboardingVerified={onboardingVerified}
               openPrivacy={openPrivacy}
               permissionState={permissionState}
@@ -695,8 +774,6 @@ export function SettingsApp(): ReactElement {
               setOnboardingStep={setOnboardingStep}
               setupReady={setupReady}
               finishOnboarding={finishOnboarding}
-              startOnboardingTest={startOnboardingTest}
-              stopOnboardingTest={stopOnboardingTest}
             />
           ) : (
             <SettingsView
@@ -757,10 +834,8 @@ type OnboardingViewProps = {
   installingRuntime: boolean;
   microphoneGranted: boolean;
   models: ModelListItem[];
-  onboardingTestResult: OnboardingDictationResult | null;
-  onboardingTestRunning: boolean;
-  onboardingTestStopping: boolean;
   onboardingStep: number;
+  onboardingVerification: OnboardingVerificationState;
   onboardingVerified: boolean;
   openPrivacy: (pane: "accessibility" | "microphone") => Promise<void>;
   permissionState: PermissionsSnapshot | null;
@@ -772,8 +847,6 @@ type OnboardingViewProps = {
   setDraft: (recipe: (current: AppSettings) => AppSettings) => void;
   setOnboardingStep: (step: number) => void;
   setupReady: boolean;
-  startOnboardingTest: () => Promise<void>;
-  stopOnboardingTest: () => Promise<void>;
 };
 
 function OnboardingView(props: OnboardingViewProps): ReactElement {
@@ -796,10 +869,8 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
     installingRuntime,
     microphoneGranted,
     models,
-    onboardingTestResult,
-    onboardingTestRunning,
-    onboardingTestStopping,
     onboardingStep,
+    onboardingVerification,
     onboardingVerified,
     openPrivacy,
     permissionState,
@@ -810,13 +881,15 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
     saveCurrentDraft,
     setDraft,
     setOnboardingStep,
-    setupReady,
-    startOnboardingTest,
-    stopOnboardingTest
+    setupReady
   } = props;
 
   const nextStep = async () => {
-    await saveCurrentDraft("Saved this step.");
+    const saved = await saveCurrentDraft("Saved this step.");
+    if (!saved) {
+      return;
+    }
+
     setOnboardingStep(Math.min(onboardingStep + 1, ONBOARDING_STEPS.length - 1));
   };
 
@@ -922,20 +995,12 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
               <div>
                 <strong>Test dictation</strong>
                 <p className="mt-1 text-sm text-[rgb(var(--muted-foreground))]">
-                  {onboardingTestRunning
-                    ? snapshotModeText(onboardingTestStopping ? "transcribing" : "listening")
-                    : "Click start, say a short sentence, then stop and transcribe to verify setup."}
+                  {onboardingVerificationInstructions(onboardingVerification, draft)}
                 </p>
               </div>
-              {onboardingTestRunning ? (
-                <Button disabled={onboardingTestStopping} onClick={() => void stopOnboardingTest()} type="button">
-                  {onboardingTestStopping ? "Transcribing..." : "Stop and transcribe"}
-                </Button>
-              ) : (
-                <Button disabled={!dictationTestReady || onboardingTestStopping} onClick={() => void startOnboardingTest()} type="button">
-                  Start test dictation
-                </Button>
-              )}
+              <Badge className={cn("rounded-full", verificationStatusClass(onboardingVerification.status))} variant="outline">
+                {verificationStatusLabel(onboardingVerification.status)}
+              </Badge>
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge className={cn("rounded-full", onboardingVerified ? "bg-emerald-600/20 text-emerald-200" : "bg-amber-500/20 text-amber-100")} variant="outline">
@@ -945,17 +1010,22 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
                 <Badge className="rounded-full bg-amber-500/20 text-amber-100" variant="outline">Auto-paste still needs Accessibility</Badge>
               ) : null}
             </div>
-            {onboardingTestResult ? (
+            {onboardingVerification.result ? (
               <div className="rounded-2xl border border-emerald-600/30 bg-emerald-950/20 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="rounded-full bg-emerald-600/20 text-emerald-200" variant="outline">{onboardingTestResult.wordCount} words</Badge>
-                  <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">{Math.max(1, Math.round(onboardingTestResult.durationMs / 100) / 10)}s</Badge>
-                  <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">Model: {onboardingTestResult.modelId}</Badge>
+                  <Badge className="rounded-full bg-emerald-600/20 text-emerald-200" variant="outline">{onboardingVerification.result.wordCount} words</Badge>
+                  <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">{Math.max(1, Math.round(onboardingVerification.result.durationMs / 100) / 10)}s</Badge>
+                  <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">Model: {onboardingVerification.result.modelId}</Badge>
                 </div>
-                <p className="mt-3 text-sm leading-relaxed text-[rgb(var(--foreground))]">{onboardingTestResult.transcript}</p>
+                <p className="mt-3 text-sm leading-relaxed text-[rgb(var(--foreground))]">{onboardingVerification.result.transcript}</p>
+              </div>
+            ) : onboardingVerification.errorMessage ? (
+              <div className="rounded-2xl border border-amber-700/40 bg-[#1f1310] p-4">
+                <strong className="text-sm">Last verification issue</strong>
+                <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{onboardingVerification.errorMessage}</p>
               </div>
             ) : (
-              <p className="text-sm text-[rgb(var(--muted-foreground))]">A successful test unlocks the Finish setup button.</p>
+              <p className="text-sm text-[rgb(var(--muted-foreground))]">A successful shortcut-triggered dictation unlocks the Finish setup button.</p>
             )}
           </div>
           <div className={cn("mt-3 flex flex-col gap-2", SUB_PANEL_CLASS)}>
@@ -1573,10 +1643,66 @@ function parseWindowMode(): SettingsWindowMode {
   return search.get("mode") === "onboarding" ? "onboarding" : "settings";
 }
 
-function snapshotModeText(mode: "listening" | "transcribing"): string {
-  return mode === "transcribing"
-    ? "Transcribing your test phrase..."
-    : "Listening for your test phrase...";
+function onboardingVerificationInstructions(state: OnboardingVerificationState, settings: AppSettings): string {
+  switch (state.status) {
+    case "listening":
+      return "Listening now. Speak naturally, then finish with the same shortcut behavior you chose.";
+    case "transcribing":
+      return "Transcribing your verification phrase now.";
+    case "passed":
+      return "That shortcut run worked. Review the transcript below, then finish setup.";
+    case "failed":
+      return state.errorMessage ?? "That try did not complete. Use your shortcut again after fixing the issue.";
+    case "armed":
+      return `Use ${settings.shortcut.display ?? "your shortcut"} exactly the way you plan to dictate every day.`;
+    default:
+      return `When you reach this step, Vorn waits for ${settings.shortcut.display ?? "your shortcut"} to start the live verification run.`;
+  }
+}
+
+function verificationStatusLabel(status: OnboardingVerificationState["status"]): string {
+  switch (status) {
+    case "armed":
+      return "Waiting for shortcut";
+    case "listening":
+      return "Listening";
+    case "transcribing":
+      return "Transcribing";
+    case "passed":
+      return "Passed";
+    case "failed":
+      return "Try again";
+    default:
+      return "Stand by";
+  }
+}
+
+function verificationStatusClass(status: OnboardingVerificationState["status"]): string {
+  switch (status) {
+    case "passed":
+      return "bg-emerald-600/20 text-emerald-200";
+    case "failed":
+      return "bg-red-500/20 text-red-200";
+    case "listening":
+    case "transcribing":
+      return "bg-[rgb(var(--accent))]/15 text-[rgb(var(--foreground))]";
+    case "armed":
+      return "bg-[#111111] text-[rgb(var(--muted-foreground))]";
+    default:
+      return "bg-[#111111] text-[rgb(var(--muted-foreground))]";
+  }
+}
+
+function sameShortcut(left?: KeyboardShortcut, right?: KeyboardShortcut): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left.keyCode !== right.keyCode || left.modifiers.length !== right.modifiers.length) {
+    return false;
+  }
+
+  return left.modifiers.every((modifier, index) => modifier === right.modifiers[index]);
 }
 
 function microphoneLabel(permissionState: PermissionsSnapshot | null): string {

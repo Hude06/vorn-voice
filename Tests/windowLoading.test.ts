@@ -15,6 +15,7 @@ type MockWindow = {
   getBounds: ReturnType<typeof vi.fn>;
   setPosition: ReturnType<typeof vi.fn>;
   webContents: {
+    on: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
   };
 };
@@ -38,6 +39,7 @@ vi.mock("electron", () => {
         getBounds: vi.fn(() => ({ width: 320, height: 92 })),
         setPosition: vi.fn(),
         webContents: {
+          on: vi.fn(),
           send: vi.fn()
         }
       };

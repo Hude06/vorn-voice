@@ -92,12 +92,14 @@ describe("SettingsStore launch window persistence", () => {
     const updated = store.updateOnboarding({
       dictationVerified: true,
       dictationVerifiedAt: 123,
-      verifiedModelId: "base.en"
+      verifiedModelId: "base.en",
+      verifiedShortcut: DEFAULT_SETTINGS.shortcut
     });
 
     expect(updated.dictationVerified).toBe(true);
     expect(updated.dictationVerifiedAt).toBe(123);
     expect(updated.verifiedModelId).toBe("base.en");
+    expect(updated.verifiedShortcut).toEqual(DEFAULT_SETTINGS.shortcut);
   });
 
   it("clears stale verification metadata when verification is reset", async () => {
@@ -108,6 +110,7 @@ describe("SettingsStore launch window persistence", () => {
         dictationVerified: true,
         dictationVerifiedAt: 123,
         verifiedModelId: "base.en",
+        verifiedShortcut: DEFAULT_SETTINGS.shortcut,
         version: ONBOARDING_VERSION
       }
     });
@@ -120,5 +123,32 @@ describe("SettingsStore launch window persistence", () => {
     expect(updated.dictationVerified).toBe(false);
     expect(updated.dictationVerifiedAt).toBeUndefined();
     expect(updated.verifiedModelId).toBeUndefined();
+    expect(updated.verifiedShortcut).toBeUndefined();
+  });
+
+  it("drops stale selected model onboarding metadata", async () => {
+    fileState.raw = JSON.stringify({
+      settings: DEFAULT_SETTINGS,
+      onboarding: {
+        ...DEFAULT_ONBOARDING_STATE,
+        completed: true,
+        dictationVerified: true,
+        dictationVerifiedAt: 123,
+        verifiedModelId: "base.en",
+        verifiedShortcut: DEFAULT_SETTINGS.shortcut,
+        version: ONBOARDING_VERSION,
+        selectedModelId: "base.en"
+      }
+    });
+
+    const { SettingsStore } = await import("../src/main/services/settingsStore");
+    const store = new SettingsStore();
+
+    const onboarding = store.loadOnboarding();
+
+    expect("selectedModelId" in onboarding).toBe(false);
+    store.updateOnboarding({ dictationVerified: true });
+    const persisted = JSON.parse(fileState.raw) as { onboarding: Record<string, unknown> };
+    expect(persisted.onboarding.selectedModelId).toBeUndefined();
   });
 });
