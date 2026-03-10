@@ -291,6 +291,39 @@ describe("AppCoordinator error mode behavior", () => {
     expect(snapshot.lastTranscriptTruncated).toBe(true);
   });
 
+  it("runs onboarding dictation tests without auto-paste and returns transcript details", async () => {
+    const harness = createHarness({
+      initialSettings: {
+        ...DEFAULT_SETTINGS,
+        autoPaste: true
+      }
+    });
+    harness.permissionService.checkAccessibilityPermission.mockReturnValue(false);
+
+    await harness.coordinator.startOnboardingDictationTest();
+    const result = await harness.coordinator.finishOnboardingDictationTest();
+
+    expect(result).toEqual({
+      transcript: "hello",
+      wordCount: 1,
+      durationMs: expect.any(Number),
+      modelId: DEFAULT_SETTINGS.activeModelId,
+      autoPasteEnabled: true,
+      accessibilityReady: false
+    });
+    expect(harness.pasteService.pasteText).not.toHaveBeenCalled();
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Test complete");
+  });
+
+  it("surfaces microphone permission errors during onboarding test start", async () => {
+    const harness = createHarness();
+    harness.permissionService.getMicrophonePermissionStatus.mockReturnValue("denied");
+    harness.permissionService.requestMicrophonePermission.mockResolvedValue(false);
+
+    await expect(harness.coordinator.startOnboardingDictationTest()).rejects.toThrow("Microphone permission is required");
+    expect(harness.audioCapture.startCapture).not.toHaveBeenCalled();
+  });
+
   it("toggles recording on repeated hotkey presses", async () => {
     const harness = createHarness({
       initialSettings: {

@@ -4,6 +4,7 @@ import {
   AppSettings,
   AppSnapshot,
   KeyboardShortcut,
+  OnboardingDictationResult,
   ModelDownloadProgressPayload,
   ModelListItem,
   OnboardingState,
@@ -37,6 +38,9 @@ const api: VoicebarApi = {
   },
   getOnboardingState(): Promise<OnboardingState> {
     return ipcRenderer.invoke(IPC_CHANNELS.onboardingGet);
+  },
+  updateOnboardingState(partial?: Partial<OnboardingState>): Promise<OnboardingState> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingUpdate, partial);
   },
   completeOnboarding(partial?: Partial<OnboardingState>): Promise<OnboardingState> {
     return ipcRenderer.invoke(IPC_CHANNELS.onboardingComplete, partial);
@@ -76,6 +80,12 @@ const api: VoicebarApi = {
   },
   installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics> {
     return ipcRenderer.invoke(IPC_CHANNELS.speechRuntimeInstall);
+  },
+  startOnboardingDictationTest(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingDictationTestStart);
+  },
+  finishOnboardingDictationTest(): Promise<OnboardingDictationResult> {
+    return ipcRenderer.invoke(IPC_CHANNELS.onboardingDictationTestFinish);
   },
   onStateChanged(callback: (snapshot: AppSnapshot) => void): () => void {
     const listener = (_event: Electron.IpcRendererEvent, payload: AppSnapshot) => callback(payload);

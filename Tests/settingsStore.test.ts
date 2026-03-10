@@ -76,4 +76,49 @@ describe("SettingsStore launch window persistence", () => {
     expect(persisted.ui?.hasSeenPostOnboardingWindow).toBe(true);
     expect(store.shouldOpenWindowOnLaunch()).toBe(false);
   });
+
+  it("persists onboarding verification state updates", async () => {
+    fileState.raw = JSON.stringify({
+      settings: DEFAULT_SETTINGS,
+      onboarding: {
+        ...DEFAULT_ONBOARDING_STATE,
+        version: ONBOARDING_VERSION
+      }
+    });
+
+    const { SettingsStore } = await import("../src/main/services/settingsStore");
+    const store = new SettingsStore();
+
+    const updated = store.updateOnboarding({
+      dictationVerified: true,
+      dictationVerifiedAt: 123,
+      verifiedModelId: "base.en"
+    });
+
+    expect(updated.dictationVerified).toBe(true);
+    expect(updated.dictationVerifiedAt).toBe(123);
+    expect(updated.verifiedModelId).toBe("base.en");
+  });
+
+  it("clears stale verification metadata when verification is reset", async () => {
+    fileState.raw = JSON.stringify({
+      settings: DEFAULT_SETTINGS,
+      onboarding: {
+        ...DEFAULT_ONBOARDING_STATE,
+        dictationVerified: true,
+        dictationVerifiedAt: 123,
+        verifiedModelId: "base.en",
+        version: ONBOARDING_VERSION
+      }
+    });
+
+    const { SettingsStore } = await import("../src/main/services/settingsStore");
+    const store = new SettingsStore();
+
+    const updated = store.updateOnboarding({ dictationVerified: false });
+
+    expect(updated.dictationVerified).toBe(false);
+    expect(updated.dictationVerifiedAt).toBeUndefined();
+    expect(updated.verifiedModelId).toBeUndefined();
+  });
 });

@@ -54,6 +54,10 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.onboardingGet, () => deps.settingsStore.loadOnboarding());
 
+  ipcMain.handle(IPC_CHANNELS.onboardingUpdate, (_event, partial?: Partial<OnboardingState>) =>
+    deps.settingsStore.updateOnboarding(partial)
+  );
+
   ipcMain.handle(IPC_CHANNELS.onboardingComplete, (_event, partial?: Partial<OnboardingState>) =>
     deps.settingsStore.completeOnboarding(partial)
   );
@@ -118,6 +122,13 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
   ipcMain.handle(IPC_CHANNELS.speechRuntimeDiagnostics, async () => deps.whisperService.getDiagnostics());
 
   ipcMain.handle(IPC_CHANNELS.speechRuntimeInstall, async () => deps.whisperService.installRuntime());
+
+  ipcMain.handle(IPC_CHANNELS.onboardingDictationTestStart, async () => {
+    await deps.coordinator.startOnboardingDictationTest();
+    return true;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.onboardingDictationTestFinish, () => deps.coordinator.finishOnboardingDictationTest());
 
   deps.appState.on("changed", (snapshot) => {
     BrowserWindow.getAllWindows().forEach((window) => {

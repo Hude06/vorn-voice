@@ -75,6 +75,22 @@ export class SettingsStore {
     });
   }
 
+  updateOnboarding(partial?: Partial<OnboardingState>): OnboardingState {
+    const persisted = this.readPersisted();
+    const next = this.normalizeOnboarding({
+      ...this.normalizeOnboarding(persisted.onboarding),
+      ...partial
+    });
+
+    this.writePersisted({
+      settings: this.normalizeSettings(persisted.settings),
+      onboarding: next,
+      ui: persisted.ui
+    });
+
+    return next;
+  }
+
   completeOnboarding(partial?: Partial<OnboardingState>): OnboardingState {
     const current = this.loadOnboarding();
     const next: OnboardingState = {
@@ -161,7 +177,7 @@ export class SettingsStore {
   }
 
   private normalizeOnboarding(onboarding?: OnboardingState): OnboardingState {
-    const normalized = {
+    const normalized: OnboardingState = {
       ...DEFAULT_ONBOARDING_STATE,
       ...onboarding,
       version: onboarding?.version ?? ONBOARDING_VERSION
@@ -171,9 +187,17 @@ export class SettingsStore {
       return {
         ...normalized,
         completed: false,
+        dictationVerified: false,
+        dictationVerifiedAt: undefined,
+        verifiedModelId: undefined,
         version: ONBOARDING_VERSION,
         completedAt: undefined
       };
+    }
+
+    if (!normalized.dictationVerified) {
+      normalized.dictationVerifiedAt = undefined;
+      normalized.verifiedModelId = undefined;
     }
 
     return normalized;

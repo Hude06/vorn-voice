@@ -149,7 +149,19 @@ export interface OnboardingState {
   completed: boolean;
   version: number;
   completedAt?: number;
+  dictationVerified?: boolean;
+  dictationVerifiedAt?: number;
+  verifiedModelId?: string;
   selectedModelId?: string;
+}
+
+export interface OnboardingDictationResult {
+  transcript: string;
+  wordCount: number;
+  durationMs: number;
+  modelId: string;
+  autoPasteEnabled: boolean;
+  accessibilityReady: boolean;
 }
 
 export type SettingsWindowMode = "settings" | "onboarding";
@@ -162,6 +174,7 @@ export interface VoicebarApi {
   checkForUpdatesManual(): Promise<UpdateStatus>;
   installDownloadedUpdate(): Promise<boolean>;
   getOnboardingState(): Promise<OnboardingState>;
+  updateOnboardingState(partial?: Partial<OnboardingState>): Promise<OnboardingState>;
   completeOnboarding(partial?: Partial<OnboardingState>): Promise<OnboardingState>;
   resetOnboarding(): Promise<OnboardingState>;
   openSettings(mode?: SettingsWindowMode): Promise<boolean>;
@@ -175,6 +188,8 @@ export interface VoicebarApi {
   checkPermissions(): Promise<PermissionsSnapshot>;
   getSpeechRuntimeDiagnostics(): Promise<SpeechRuntimeDiagnostics>;
   installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics>;
+  startOnboardingDictationTest(): Promise<boolean>;
+  finishOnboardingDictationTest(): Promise<OnboardingDictationResult>;
   onStateChanged(callback: (snapshot: AppSnapshot) => void): () => void;
   onUpdateStateChanged(callback: (status: UpdateStatus) => void): () => void;
   onOverlayUpdate(callback: (payload: OverlayPayload) => void): () => void;
@@ -186,6 +201,7 @@ export const ONBOARDING_VERSION = 1;
 
 export const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   completed: false,
+  dictationVerified: false,
   version: ONBOARDING_VERSION
 };
 

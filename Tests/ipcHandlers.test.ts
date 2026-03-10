@@ -66,6 +66,7 @@ describe("registerIpcHandlers settings sanitization", () => {
       settingsStore: {
         resolveSettingsWindowMode: vi.fn((mode?: string) => mode ?? "settings"),
         loadOnboarding: vi.fn(),
+        updateOnboarding: vi.fn(() => ({ completed: false, version: 1, dictationVerified: true })),
         completeOnboarding: vi.fn(),
         resetOnboarding: vi.fn()
       },
@@ -106,5 +107,74 @@ describe("registerIpcHandlers settings sanitization", () => {
         display: "Cmd+Space"
       }
     }));
+  });
+
+  it("registers onboarding test and onboarding update handlers", async () => {
+    const registeredHandlers = new Map<string, (...args: unknown[]) => unknown>();
+    handleMock.mockImplementation((channel: string, handler: (...args: unknown[]) => unknown) => {
+      registeredHandlers.set(channel, handler);
+    });
+
+    const deps = {
+      appState: {
+        getSnapshot: vi.fn(() => ({ ok: true })),
+        on: vi.fn()
+      },
+      coordinator: {
+        updateSettings: vi.fn(),
+        startOnboardingDictationTest: vi.fn(async () => undefined),
+        finishOnboardingDictationTest: vi.fn(async () => ({ transcript: "hello", wordCount: 1 }))
+      },
+      hotkeyService: {
+        beginCapture: vi.fn(),
+        cancelCapture: vi.fn(),
+        probeHook: vi.fn(() => undefined)
+      },
+      modelManager: {
+        catalog: [],
+        isInstalled: vi.fn(),
+        downloadModel: vi.fn(),
+        removeModel: vi.fn()
+      },
+      permissionService: {
+        openPrivacySettings: vi.fn(),
+        requestMicrophonePermission: vi.fn(),
+        checkAccessibilityPermission: vi.fn(() => true),
+        getMicrophonePermissionStatus: vi.fn(() => "granted")
+      },
+      whisperService: {
+        getDiagnostics: vi.fn(),
+        installRuntime: vi.fn()
+      },
+      updater: {
+        getMenuState: vi.fn(() => ({ updateState: "idle" })),
+        checkForUpdatesManual: vi.fn(),
+        installDownloadedUpdate: vi.fn(),
+        onMenuStateChanged: vi.fn()
+      },
+      settingsStore: {
+        resolveSettingsWindowMode: vi.fn((mode?: string) => mode ?? "settings"),
+        loadOnboarding: vi.fn(),
+        updateOnboarding: vi.fn(() => ({ completed: false, version: 1, dictationVerified: true })),
+        completeOnboarding: vi.fn(),
+        resetOnboarding: vi.fn()
+      },
+      settingsWindow: {
+        show: vi.fn()
+      },
+      preloadPath: "/tmp/preload.js",
+      rendererURL: "http://localhost:5173"
+    };
+
+    const { registerIpcHandlers } = await import("../src/main/ipc/handlers");
+    registerIpcHandlers(deps as never);
+
+    await registeredHandlers.get(IPC_CHANNELS.onboardingUpdate)?.({}, { dictationVerified: true });
+    await registeredHandlers.get(IPC_CHANNELS.onboardingDictationTestStart)?.({});
+    await registeredHandlers.get(IPC_CHANNELS.onboardingDictationTestFinish)?.({});
+
+    expect(deps.settingsStore.updateOnboarding).toHaveBeenCalledWith({ dictationVerified: true });
+    expect(deps.coordinator.startOnboardingDictationTest).toHaveBeenCalled();
+    expect(deps.coordinator.finishOnboardingDictationTest).toHaveBeenCalled();
   });
 });
