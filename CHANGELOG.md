@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-03-10
+
+- Redesign the settings window into a left-tab layout so General, Models, Stats, and Advanced pages feel like a native desktop app while keeping the existing Vorn theme.
+- Add a local-only speech stats store and renderer bridge so lifetime totals and the latest session are available inside settings.
+- Add regression coverage for speech stats recording, IPC stats loading, and startup wiring for the new stats store.
+
 ## 2026-03-09
 
 - Replace the menu bar mark with a smaller icon-only waveform that fits cleanly within a single macOS status item slot.

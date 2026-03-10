@@ -1,6 +1,7 @@
 export const IPC_CHANNELS = {
   stateGet: "state:get",
   stateChanged: "state:changed",
+  speechStatsGet: "speech-stats:get",
   appVersionGet: "app-version:get",
   settingsSave: "settings:save",
   settingsOpen: "settings:open",

@@ -1,19 +1,10 @@
-import { SpeechSample } from "./types";
+import type { SpeechSample, SpeechStats } from "./types";
 
 export const SPEECH_STATS_STORAGE_KEY = "voicebar.speechStats.v1";
 export const MIN_SPEECH_SAMPLE_DURATION_MS = 500;
 
 const MAX_DAILY_BUCKETS = 45;
 const DAYS_IN_WEEK = 7;
-
-export interface SpeechStats {
-  totalWords: number;
-  totalDurationMs: number;
-  sampleCount: number;
-  lastSampleId: string | null;
-  lastSampleWpm: number | null;
-  dailyWordBuckets: Record<string, number>;
-}
 
 export function createEmptySpeechStats(): SpeechStats {
   return {

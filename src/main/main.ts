@@ -8,6 +8,7 @@ import { ModelManager } from "./services/modelManager";
 import { PasteService } from "./services/pasteService";
 import { PermissionService } from "./services/permissionService";
 import { SettingsStore } from "./services/settingsStore";
+import { SpeechStatsStore } from "./services/speechStatsStore";
 import { UpdateService } from "./services/updateService";
 import { WhisperService } from "./services/whisperService";
 import { AppState } from "./state/appState";
@@ -41,6 +42,7 @@ async function bootstrap(): Promise<void> {
   await modelManager.ensureBundledModel(settings.activeModelId).catch(() => undefined);
   const pasteService = new PasteService();
   const permissionService = new PermissionService();
+  const speechStatsStore = new SpeechStatsStore();
   settingsWindow = new SettingsWindow();
   const settingsUi = settingsWindow;
   const overlayWindow = new OverlayWindow();
@@ -56,6 +58,7 @@ async function bootstrap(): Promise<void> {
     modelManager,
     pasteService,
     permissionService,
+    speechStatsStore,
     overlayWindow
   );
 
@@ -68,6 +71,7 @@ async function bootstrap(): Promise<void> {
     whisperService,
     updater,
     settingsStore,
+    speechStatsStore,
     settingsWindow: settingsUi,
     preloadPath,
     rendererURL

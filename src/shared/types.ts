@@ -74,6 +74,15 @@ export interface SpeechSample {
   createdAt: number;
 }
 
+export interface SpeechStats {
+  totalWords: number;
+  totalDurationMs: number;
+  sampleCount: number;
+  lastSampleId: string | null;
+  lastSampleWpm: number | null;
+  dailyWordBuckets: Record<string, number>;
+}
+
 export interface WhisperModel {
   id: string;
   name: string;
@@ -177,6 +186,7 @@ export type SettingsWindowMode = "settings" | "onboarding";
 
 export interface VoicebarApi {
   getState(): Promise<AppSnapshot>;
+  getSpeechStats(): Promise<SpeechStats>;
   getAppVersion(): Promise<string>;
   saveSettings(settings: AppSettings): Promise<AppSnapshot>;
   getUpdateState(): Promise<UpdateStatus>;

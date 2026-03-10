@@ -59,6 +59,7 @@ describe("main process startup", () => {
       onMenuStateChanged: vi.fn(() => vi.fn())
     };
     const whisperService = { getDiagnostics: vi.fn(async () => undefined) };
+    const speechStatsStore = { load: vi.fn(() => ({ totalWords: 0, totalDurationMs: 0, sampleCount: 0, lastSampleId: null, lastSampleWpm: null, dailyWordBuckets: {} })) };
 
     vi.doMock("electron", () => ({ app, dialog }));
     vi.doMock("../src/main/state/appState", () => ({ AppState: vi.fn(() => appState) }));
@@ -69,6 +70,7 @@ describe("main process startup", () => {
     vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn(() => ({ ensureBundledModel: vi.fn(async () => true) })) }));
     vi.doMock("../src/main/services/pasteService", () => ({ PasteService: vi.fn(() => ({})) }));
     vi.doMock("../src/main/services/permissionService", () => ({ PermissionService: vi.fn(() => ({})) }));
+    vi.doMock("../src/main/services/speechStatsStore", () => ({ SpeechStatsStore: vi.fn(() => speechStatsStore) }));
     vi.doMock("../src/main/services/updateService", () => ({ UpdateService: vi.fn(() => updateService) }));
     vi.doMock("../src/main/windows/settingsWindow", () => ({ SettingsWindow: vi.fn(() => settingsWindow) }));
     vi.doMock("../src/main/windows/overlayWindow", () => ({ OverlayWindow: vi.fn(() => overlayWindow) }));
@@ -120,6 +122,7 @@ describe("main process startup", () => {
     vi.doMock("../src/main/services/modelManager", () => ({ ModelManager: vi.fn(() => ({ ensureBundledModel: vi.fn(async () => true) })) }));
     vi.doMock("../src/main/services/pasteService", () => ({ PasteService: vi.fn() }));
     vi.doMock("../src/main/services/permissionService", () => ({ PermissionService: vi.fn() }));
+    vi.doMock("../src/main/services/speechStatsStore", () => ({ SpeechStatsStore: vi.fn() }));
     vi.doMock("../src/main/services/updateService", () => ({ UpdateService: vi.fn() }));
     vi.doMock("../src/main/windows/settingsWindow", () => ({ SettingsWindow: vi.fn(() => ({ show: vi.fn(), get: vi.fn() })) }));
     vi.doMock("../src/main/windows/overlayWindow", () => ({ OverlayWindow: vi.fn() }));

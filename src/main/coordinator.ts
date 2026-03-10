@@ -4,6 +4,7 @@ import { HotkeyService } from "./services/hotkeyService";
 import { ModelManager } from "./services/modelManager";
 import { PasteService } from "./services/pasteService";
 import { PermissionService } from "./services/permissionService";
+import { SpeechStatsStore } from "./services/speechStatsStore";
 import { SettingsStore } from "./services/settingsStore";
 import { WhisperService } from "./services/whisperService";
 import { OverlayWindow } from "./windows/overlayWindow";
@@ -47,6 +48,7 @@ export class AppCoordinator {
     private readonly modelManager: ModelManager,
     private readonly pasteService: PasteService,
     private readonly permissionService: PermissionService,
+    private readonly speechStatsStore: SpeechStatsStore,
     private readonly overlay: OverlayWindow
   ) {
     this.onboardingVerification = createOnboardingVerificationState(this.state.getSnapshot().settings.shortcut);
@@ -358,13 +360,16 @@ export class AppCoordinator {
       const words = countWords(transcript);
       if (words > 0 && durationMs >= MIN_SPEECH_SAMPLE_DURATION_MS) {
         const createdAt = Date.now();
-        this.state.setSpeechSample({
+        const sample = {
           id: `${createdAt}-${Math.floor(Math.random() * 1000000)}`,
           words,
           durationMs,
           wpm: computeWpm(words, durationMs),
           createdAt
-        });
+        };
+
+        this.speechStatsStore.recordSample(sample);
+        this.state.setSpeechSample(sample);
       }
 
       if (options.shouldAutoPaste && snapshot.settings.autoPaste) {

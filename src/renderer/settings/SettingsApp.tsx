@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
+import { averageWpm, createEmptySpeechStats, wordsThisWeek } from "../../shared/speechStats";
 import {
   AppSettings,
   AppSnapshot,
@@ -12,6 +13,7 @@ import {
   PermissionsSnapshot,
   SpeechCleanupMode,
   SpeechPipelineDiagnostics,
+  SpeechStats,
   SettingsWindowMode,
   SpeechRuntimeDiagnostics,
   UpdateStatus
@@ -28,6 +30,7 @@ type StatusTone = "neutral" | "success" | "warning" | "danger";
 type CriticalSettingsData = {
   snapshot: AppSnapshot;
   models: ModelListItem[];
+  speechStats: SpeechStats;
 };
 
 type SupportChecksData = {
@@ -45,8 +48,23 @@ type DraftUpdateOptions = {
   immediateSave?: boolean;
 };
 
+type SettingsTabId = "general" | "models" | "stats" | "advanced";
+
+type SettingsTabItem = {
+  description: string;
+  id: SettingsTabId;
+  label: string;
+};
+
 const AUTOSAVE_DELAY_MS = 500;
 const TOAST_DURATION_MS = 1800;
+
+const SETTINGS_TABS: SettingsTabItem[] = [
+  { id: "general", label: "General", description: "Shortcut, dictation, and setup status" },
+  { id: "models", label: "Models", description: "Install and switch local models" },
+  { id: "stats", label: "Stats", description: "Lifetime totals and weekly trend" },
+  { id: "advanced", label: "Advanced", description: "Runtime, updates, and diagnostics" }
+];
 
 const ONBOARDING_STEPS = [
   "Choose a model",
@@ -63,8 +81,10 @@ const FULLSCREEN_CONTENT_WIDTH_CLASS = "w-full max-w-[min(1500px,calc(100vw-24px
 export function SettingsApp(): ReactElement {
   const voicebar = getVoicebarApi();
   const [windowMode, setWindowMode] = useState<SettingsWindowMode>(parseWindowMode());
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabId>("general");
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+  const [speechStats, setSpeechStats] = useState<SpeechStats>(createEmptySpeechStats());
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [models, setModels] = useState<ModelListItem[]>([]);
@@ -89,6 +109,7 @@ export function SettingsApp(): ReactElement {
   const skipAutosaveRef = useRef(true);
   const nextAutosaveDelayRef = useRef(AUTOSAVE_DELAY_MS);
   const lastSavedSignatureRef = useRef<string | null>(null);
+  const lastSpeechSampleIdRef = useRef<string | null>(null);
   const requestSaveRef = useRef<(nextSettings: AppSettings, options?: { statusText?: string; toastText?: string }) => Promise<boolean>>(async () => false);
 
   const ready = Boolean(snapshot && draft && onboarding && onboardingVerification);
@@ -158,7 +179,9 @@ export function SettingsApp(): ReactElement {
         }
 
         setSnapshot(critical.snapshot);
+        setSpeechStats(critical.speechStats);
         draftRef.current = critical.snapshot.settings;
+        lastSpeechSampleIdRef.current = critical.snapshot.lastSpeechSample?.id ?? null;
         lastSavedSignatureRef.current = settingsSignature(critical.snapshot.settings);
         skipAutosaveRef.current = true;
         setDraft(critical.snapshot.settings);
@@ -201,6 +224,11 @@ export function SettingsApp(): ReactElement {
       }
 
       setSnapshot(nextSnapshot);
+      const nextSpeechSampleId = nextSnapshot.lastSpeechSample?.id ?? null;
+      if (nextSpeechSampleId && nextSpeechSampleId !== lastSpeechSampleIdRef.current) {
+        lastSpeechSampleIdRef.current = nextSpeechSampleId;
+        void voicebar.getSpeechStats().then(setSpeechStats).catch(() => undefined);
+      }
       draftRef.current = saving ? draftRef.current : nextSnapshot.settings;
       lastSavedSignatureRef.current = settingsSignature(nextSnapshot.settings);
       skipAutosaveRef.current = true;
@@ -645,6 +673,7 @@ export function SettingsApp(): ReactElement {
       });
       setOnboarding(nextOnboarding);
       setWindowMode("settings");
+      setActiveSettingsTab("general");
       setStatus({ tone: "success", text: "Setup complete. You can start dictating now." });
     } catch (error) {
       setStatus({ tone: "danger", text: errorToMessage(error) });
@@ -679,9 +708,33 @@ export function SettingsApp(): ReactElement {
             <p className="m-0 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
               {windowMode === "onboarding"
                 ? "Work through the essentials once, then Vorn can stay quietly in your menu bar."
-                : "Everything you change often stays near the top, with checks and troubleshooting a little farther down."}
+                : "Move between focused pages like a normal desktop app without losing the existing Vorn look."}
             </p>
           </div>
+
+          {windowMode === "settings" ? (
+            <Card className={cn(CARD_BASE_CLASS, "p-3")}>
+              <nav aria-label="Settings sections" className="flex flex-col gap-2">
+                {SETTINGS_TABS.map((tab) => (
+                  <button
+                    aria-current={activeSettingsTab === tab.id ? "page" : undefined}
+                    className={cn(
+                      "flex w-full flex-col rounded-2xl border border-transparent px-4 py-3 text-left transition-colors",
+                      activeSettingsTab === tab.id
+                        ? "border-[rgb(var(--accent))]/35 bg-[rgb(var(--accent))]/12 text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.16)]"
+                        : "bg-[rgb(var(--muted))] text-[rgb(var(--muted-foreground))] hover:border-[rgb(var(--border))] hover:bg-[#1b1b1b] hover:text-[rgb(var(--foreground))]"
+                    )}
+                    key={tab.id}
+                    onClick={() => setActiveSettingsTab(tab.id)}
+                    type="button"
+                  >
+                    <strong className="text-sm">{tab.label}</strong>
+                    <span className="mt-1 text-xs leading-relaxed opacity-80">{tab.description}</span>
+                  </button>
+                ))}
+              </nav>
+            </Card>
+          ) : null}
 
           <Card className={cn(CARD_BASE_CLASS, "p-4")}> 
             <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
@@ -689,6 +742,7 @@ export function SettingsApp(): ReactElement {
             <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
             <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
             <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
+            {windowMode === "settings" ? <SidebarStat label="This week" value={formatCount(wordsThisWeek(speechStats))} tone="neutral" /> : null}
           </Card>
 
           {windowMode === "onboarding" ? (
@@ -777,6 +831,7 @@ export function SettingsApp(): ReactElement {
             />
           ) : (
             <SettingsView
+              activeTab={activeSettingsTab}
               accessibilityReady={accessibilityReady}
               activeModel={activeModel}
               activeModelInstalled={activeModelInstalled}
@@ -804,6 +859,7 @@ export function SettingsApp(): ReactElement {
               resetOnboarding={resetOnboarding}
               runtimeReady={runtimeReady}
               runtimeState={runtimeState}
+              speechStats={speechStats}
               snapshot={snapshot!}
               setDraft={updateDraft}
               updateState={updateState}
@@ -1052,6 +1108,7 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
 }
 
 type SettingsViewProps = {
+  activeTab: SettingsTabId;
   accessibilityReady: boolean;
   activeModel: ModelListItem | undefined;
   activeModelInstalled: boolean;
@@ -1079,6 +1136,7 @@ type SettingsViewProps = {
   resetOnboarding: () => Promise<void>;
   runtimeReady: boolean;
   runtimeState: SpeechRuntimeDiagnostics | null;
+  speechStats: SpeechStats;
   snapshot: AppSnapshot;
   setDraft: (recipe: (current: AppSettings) => AppSettings) => void;
   updateState: UpdateStatus | null;
@@ -1086,6 +1144,7 @@ type SettingsViewProps = {
 
 function SettingsView(props: SettingsViewProps): ReactElement {
   const {
+    activeTab,
     accessibilityReady,
     activeModel,
     activeModelInstalled,
@@ -1113,15 +1172,18 @@ function SettingsView(props: SettingsViewProps): ReactElement {
     resetOnboarding,
     runtimeReady,
     runtimeState,
+    speechStats,
     snapshot,
     setDraft,
     updateState
   } = props;
 
-  return (
-    <div className="flex flex-col gap-3">
-      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-        <SectionHeading title="Models" text="Base English is bundled by default. Install Tiny or Small if you want a different speed or accuracy tradeoff." />
+  if (activeTab === "models") {
+    return (
+      <SettingsSectionCard
+        text="Base English is bundled by default. Install Tiny or Small if you want a different speed or accuracy tradeoff."
+        title="Models"
+      >
         <ModelPanel
           activeModelId={draft.activeModelId}
           downloadModel={downloadModel}
@@ -1131,89 +1193,20 @@ function SettingsView(props: SettingsViewProps): ReactElement {
           removeModel={removeModel}
           removingModelId={removingModelId}
         />
-      </Card>
+      </SettingsSectionCard>
+    );
+  }
 
-      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-        <SectionHeading title="Dictation" text="Choose your shortcut and how Vorn should deliver text after transcription." />
-        <HotkeyPanel
-          capturePending={capturePending}
-          hotkeyBehavior={draft.hotkeyBehavior}
-          onBegin={beginHotkeyCapture}
-          onCancel={cancelHotkeyCapture}
-          shortcut={draft.shortcut}
-        />
-        <div className="flex flex-col gap-3">
-          <ToggleRow
-            checked={draft.hotkeyBehavior === "toggle"}
-            detail="Hold records while pressed. Toggle starts on first press and stops on second press."
-            label="Press once to start and again to stop"
-            onChange={(checked) => setDraft((current) => ({ ...current, hotkeyBehavior: checked ? "toggle" : "hold" }))}
-          />
-          <ToggleRow checked={draft.autoPaste} detail="Paste into the frontmost app after each transcript." label="Auto-paste text" onChange={(checked) => setDraft((current) => ({ ...current, autoPaste: checked }))} />
-          <ToggleRow checked={draft.restoreClipboard} detail="Restore your clipboard after auto-paste runs." label="Restore clipboard" onChange={(checked) => setDraft((current) => ({ ...current, restoreClipboard: checked }))} />
-        </div>
-        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
-          <SectionHeading compact title="Speech cleanup" text="Balanced keeps your full recording by default. Aggressive trims more silence, while Off sends raw audio to Whisper." />
-          <CleanupModeSelector mode={draft.speechCleanupMode} onChange={(mode) => setDraft((current) => ({ ...current, speechCleanupMode: mode }))} />
-        </section>
-        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
-          <SectionHeading compact title="Low-latency capture" text="Keeps a warm local mic stream so speech right after keydown and right before keyup is less likely to clip." />
-          <div className="flex flex-col gap-3">
-            <ToggleRow
-              checked={draft.lowLatencyCaptureEnabled}
-              detail="Recommended for push-to-talk. Audio stays local and only recent PCM is buffered in memory."
-              label="Enable low-latency capture"
-              onChange={(checked) => setDraft((current) => ({ ...current, lowLatencyCaptureEnabled: checked }))}
-            />
-          </div>
-          {draft.lowLatencyCaptureEnabled ? (
-            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
-                <span>Pre-roll (ms)</span>
-                <Input
-                  className="h-10"
-                  min={0}
-                  max={1200}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setDraft((current) => ({ ...current, preRollMs: clampCaptureWindow(value, current.preRollMs) }));
-                  }}
-                  type="number"
-                  value={draft.preRollMs}
-                />
-              </label>
-              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
-                <span>Post-roll (ms)</span>
-                <Input
-                  className="h-10"
-                  min={0}
-                  max={1200}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setDraft((current) => ({ ...current, postRollMs: clampCaptureWindow(value, current.postRollMs) }));
-                  }}
-                  type="number"
-                  value={draft.postRollMs}
-                />
-              </label>
-            </div>
-          ) : null}
-        </section>
-      </Card>
+  if (activeTab === "stats") {
+    return <StatsView snapshot={snapshot} speechStats={speechStats} />;
+  }
 
-      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-        <SectionHeading title="Setup status" text="Keep an eye on the essentials here. If these checks are green, dictation should be ready to go." />
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <CheckCard detail={activeModelInstalled ? activeModel?.name ?? "Installed" : "Install a model, then select it."} ready={activeModelInstalled} title="Model" />
-          <CheckCard action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>} detail={runtimeReady ? "Speech runtime found." : "Needed for local transcription."} ready={runtimeReady} title="Speech runtime" />
-          <CheckCard action={<Button variant="outline" onClick={() => void requestMicrophone()} type="button">{microphoneGranted ? "Check again" : "Allow microphone"}</Button>} detail={microphoneGranted ? "Microphone access granted." : "Needed before dictation can start."} ready={microphoneGranted} title="Microphone" />
-          <CheckCard action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined} detail={draft.autoPaste ? (accessibilityReady ? "Ready for auto-paste." : "Needed only if auto-paste is enabled.") : "Optional because auto-paste is off."} ready={accessibilityReady} title="Accessibility" />
-          <CheckCard detail={permissionState?.hotkeyMessage ?? "Global shortcut monitoring is working."} ready={hotkeyReady} title="Hotkey monitoring" />
-        </div>
-      </Card>
-
-      <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-        <SectionHeading title="Advanced" text="Use these controls when you need to troubleshoot permissions, runtime detection, or update behavior." />
+  if (activeTab === "advanced") {
+    return (
+      <SettingsSectionCard
+        text="Use these controls when you need to troubleshoot permissions, runtime detection, or update behavior."
+        title="Advanced"
+      >
         <div className="flex flex-col gap-3">
           <ToggleRow checked={draft.autoUpdateEnabled} detail="Automatically download and install app updates when available." label="Automatic updates" onChange={(checked) => setDraft((current) => ({ ...current, autoUpdateEnabled: checked }))} />
         </div>
@@ -1234,12 +1227,8 @@ function SettingsView(props: SettingsViewProps): ReactElement {
           <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">Version {appVersion}</p>
           <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{updateState?.label ?? "Update status unavailable."}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button disabled={checkingForUpdates} variant="outline" onClick={() => void checkForUpdates()} type="button">
-              {checkingForUpdates ? "Checking..." : "Check for updates"}
-            </Button>
-            <Button disabled={!updateState?.canInstall || installingUpdate} variant="outline" onClick={() => void installUpdate()} type="button">
-              {installingUpdate ? "Installing..." : "Install downloaded update"}
-            </Button>
+            <Button disabled={checkingForUpdates} variant="outline" onClick={() => void checkForUpdates()} type="button">{checkingForUpdates ? "Checking..." : "Check for updates"}</Button>
+            <Button disabled={!updateState?.canInstall || installingUpdate} variant="outline" onClick={() => void installUpdate()} type="button">{installingUpdate ? "Installing..." : "Install downloaded update"}</Button>
           </div>
         </div>
         <div className={cn("mt-4", SUB_PANEL_CLASS)}>
@@ -1264,7 +1253,138 @@ function SettingsView(props: SettingsViewProps): ReactElement {
           <Button variant="outline" onClick={() => void openPrivacy("microphone")} type="button">Open Microphone Settings</Button>
           <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" variant="outline" onClick={() => void resetOnboarding()} type="button">Run setup again</Button>
         </div>
-      </Card>
+      </SettingsSectionCard>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <SettingsSectionCard title="General" text="Choose your shortcut and how Vorn should deliver text after transcription.">
+        <HotkeyPanel
+          capturePending={capturePending}
+          hotkeyBehavior={draft.hotkeyBehavior}
+          onBegin={beginHotkeyCapture}
+          onCancel={cancelHotkeyCapture}
+          shortcut={draft.shortcut}
+        />
+        <div className="flex flex-col gap-3">
+          <ToggleRow
+            checked={draft.hotkeyBehavior === "toggle"}
+            detail="Hold records while pressed. Toggle starts on first press and stops on second press."
+            label="Press once to start and again to stop"
+            onChange={(checked) => setDraft((current) => ({ ...current, hotkeyBehavior: checked ? "toggle" : "hold" }))}
+          />
+          <ToggleRow checked={draft.autoPaste} detail="Paste into the frontmost app after each transcript." label="Auto-paste text" onChange={(checked) => setDraft((current) => ({ ...current, autoPaste: checked }))} />
+          <ToggleRow checked={draft.restoreClipboard} detail="Restore your clipboard after auto-paste runs." label="Restore clipboard" onChange={(checked) => setDraft((current) => ({ ...current, restoreClipboard: checked }))} />
+        </div>
+        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <SectionHeading compact title="Speech cleanup" text="Balanced keeps your full recording by default. Aggressive trims more silence, while Off sends raw audio to Whisper." />
+          <CleanupModeSelector mode={draft.speechCleanupMode} onChange={(mode) => setDraft((current) => ({ ...current, speechCleanupMode: mode }))} />
+        </section>
+        <section className={cn("mt-4", SUB_PANEL_CLASS)}>
+          <SectionHeading compact title="Low-latency capture" text="Keeps a warm local mic stream so speech right after keydown and right before keyup is less likely to clip." />
+          <div className="flex flex-col gap-3">
+            <ToggleRow checked={draft.lowLatencyCaptureEnabled} detail="Recommended for push-to-talk. Audio stays local and only recent PCM is buffered in memory." label="Enable low-latency capture" onChange={(checked) => setDraft((current) => ({ ...current, lowLatencyCaptureEnabled: checked }))} />
+          </div>
+          {draft.lowLatencyCaptureEnabled ? (
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
+                <span>Pre-roll (ms)</span>
+                <Input className="h-10" min={0} max={1200} onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setDraft((current) => ({ ...current, preRollMs: clampCaptureWindow(value, current.preRollMs) }));
+                }} type="number" value={draft.preRollMs} />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-[rgb(var(--muted-foreground))]">
+                <span>Post-roll (ms)</span>
+                <Input className="h-10" min={0} max={1200} onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setDraft((current) => ({ ...current, postRollMs: clampCaptureWindow(value, current.postRollMs) }));
+                }} type="number" value={draft.postRollMs} />
+              </label>
+            </div>
+          ) : null}
+        </section>
+      </SettingsSectionCard>
+
+      <SettingsSectionCard title="Setup status" text="Keep an eye on the essentials here. If these checks are green, dictation should be ready to go.">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <CheckCard detail={activeModelInstalled ? activeModel?.name ?? "Installed" : "Install a model, then select it."} ready={activeModelInstalled} title="Model" />
+          <CheckCard action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>} detail={runtimeReady ? "Speech runtime found." : "Needed for local transcription."} ready={runtimeReady} title="Speech runtime" />
+          <CheckCard action={<Button variant="outline" onClick={() => void requestMicrophone()} type="button">{microphoneGranted ? "Check again" : "Allow microphone"}</Button>} detail={microphoneGranted ? "Microphone access granted." : "Needed before dictation can start."} ready={microphoneGranted} title="Microphone" />
+          <CheckCard action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined} detail={draft.autoPaste ? (accessibilityReady ? "Ready for auto-paste." : "Needed only if auto-paste is enabled.") : "Optional because auto-paste is off."} ready={accessibilityReady} title="Accessibility" />
+          <CheckCard detail={permissionState?.hotkeyMessage ?? "Global shortcut monitoring is working."} ready={hotkeyReady} title="Hotkey monitoring" />
+        </div>
+      </SettingsSectionCard>
+    </div>
+  );
+}
+
+type SettingsSectionCardProps = {
+  children: ReactNode;
+  text: string;
+  title: string;
+};
+
+function SettingsSectionCard({ children, text, title }: SettingsSectionCardProps): ReactElement {
+  return (
+    <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
+      <SectionHeading text={text} title={title} />
+      {children}
+    </Card>
+  );
+}
+
+type StatsViewProps = {
+  snapshot: AppSnapshot;
+  speechStats: SpeechStats;
+};
+
+function StatsView({ snapshot, speechStats }: StatsViewProps): ReactElement {
+  const weeklyWords = wordsThisWeek(speechStats);
+  const avgWpm = Math.round(averageWpm(speechStats));
+
+  return (
+    <div className="flex flex-col gap-3">
+      <SettingsSectionCard title="Stats" text="All speech stats stay local on this Mac. Lifetime totals update after each completed dictation.">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Total words" value={formatCount(speechStats.totalWords)} detail="Across all finished dictation sessions" />
+          <MetricCard label="Total sessions" value={formatCount(speechStats.sampleCount)} detail="Only completed speech captures count" />
+          <MetricCard label="Average WPM" value={avgWpm > 0 ? `${avgWpm}` : "-"} detail="Weighted across your lifetime usage" />
+          <MetricCard label="Words this week" value={formatCount(weeklyWords)} detail="Rolling 7-day local trend" />
+        </div>
+      </SettingsSectionCard>
+
+      <SettingsSectionCard title="Last session" text="Your most recent completed dictation is shown here for quick context.">
+        {snapshot.lastSpeechSample ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <MetricCard label="Words" value={formatCount(snapshot.lastSpeechSample.words)} detail="Most recent dictation" />
+            <MetricCard label="Duration" value={formatDurationMs(snapshot.lastSpeechSample.durationMs)} detail="Recorded speech length" />
+            <MetricCard label="WPM" value={`${Math.round(snapshot.lastSpeechSample.wpm)}`} detail={formatRecordedAt(snapshot.lastSpeechSample.createdAt)} />
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-5">
+            <strong className="text-sm">No dictation sessions yet</strong>
+            <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">Finish one dictation and this page will start filling in with your local stats.</p>
+          </div>
+        )}
+      </SettingsSectionCard>
+    </div>
+  );
+}
+
+type MetricCardProps = {
+  detail: string;
+  label: string;
+  value: string;
+};
+
+function MetricCard({ detail, label, value }: MetricCardProps): ReactElement {
+  return (
+    <div className="rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-4">
+      <p className="text-sm text-[rgb(var(--muted-foreground))]">{label}</p>
+      <strong className="mt-3 block text-3xl tracking-tight">{value}</strong>
+      <p className="mt-2 text-sm text-[rgb(var(--muted-foreground))]">{detail}</p>
     </div>
   );
 }
@@ -1574,12 +1694,13 @@ function EmptyState({ text, title }: EmptyStateProps): ReactElement {
 }
 
 async function loadCriticalSettingsData(voicebar: NonNullable<Window["voicebar"]>): Promise<CriticalSettingsData> {
-  const [snapshot, models] = await Promise.all([
+  const [snapshot, models, speechStats] = await Promise.all([
     withTimeout(voicebar.getState(), 5000, "App state"),
-    withTimeout(voicebar.listModels(), 5000, "Model list")
+    withTimeout(voicebar.listModels(), 5000, "Model list"),
+    withTimeout(voicebar.getSpeechStats(), 5000, "Speech stats")
   ]);
 
-  return { snapshot, models };
+  return { snapshot, models, speechStats };
 }
 
 async function loadSupportChecks(voicebar: NonNullable<Window["voicebar"]>): Promise<SupportChecksData> {
@@ -1732,9 +1853,32 @@ function errorToMessage(error: unknown, fallback = "Something went wrong."): str
   return fallback;
 }
 
+function formatCount(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatDurationMs(value: number): string {
+  if (value < 60000) {
+    return `${Math.max(1, Math.round(value / 100) / 10)}s`;
+  }
+
+  const minutes = value / 60000;
+  return `${minutes.toFixed(minutes >= 10 ? 0 : 1)}m`;
+}
+
+function formatRecordedAt(timestamp: number): string {
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
 function formatSeconds(value: number): string {
   return `${value.toFixed(1)}s`;
 }
+
 
 function clampCaptureWindow(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {

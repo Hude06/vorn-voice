@@ -12,6 +12,7 @@ import {
   PrivacyPane,
   PermissionsSnapshot,
   SettingsWindowMode,
+  SpeechStats,
   SpeechRuntimeDiagnostics,
   UpdateStatus,
   VoicebarApi
@@ -20,6 +21,9 @@ import {
 const api: VoicebarApi = {
   getState(): Promise<AppSnapshot> {
     return ipcRenderer.invoke(IPC_CHANNELS.stateGet);
+  },
+  getSpeechStats(): Promise<SpeechStats> {
+    return ipcRenderer.invoke(IPC_CHANNELS.speechStatsGet);
   },
   getAppVersion(): Promise<string> {
     return ipcRenderer.invoke(IPC_CHANNELS.appVersionGet);

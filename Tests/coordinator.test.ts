@@ -16,6 +16,7 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
 
   const state = new AppState(options?.initialSettings ?? DEFAULT_SETTINGS);
   const store = { save: vi.fn() };
+  const speechStatsStore = { recordSample: vi.fn() };
   const hotkey = {
     setHandlers: vi.fn((press: () => void | Promise<void>, release: () => void | Promise<void>) => {
       onPress = press;
@@ -61,6 +62,7 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
     modelManager as any,
     pasteService as any,
     permissionService as any,
+    speechStatsStore as any,
     overlay as any
   );
 
@@ -79,6 +81,7 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
     modelManager,
     pasteService,
     permissionService,
+    speechStatsStore,
     press: async () => {
       await onPress?.();
       await waitForCoordinator();
@@ -148,6 +151,21 @@ describe("AppCoordinator error mode behavior", () => {
     await harness.release();
 
     expect(fs.unlink).toHaveBeenCalledWith("/tmp/sample.wav");
+  });
+
+  it("records aggregate stats after successful transcription", async () => {
+    const harness = createHarness();
+    const nowSpy = vi.spyOn(Date, "now");
+    nowSpy.mockReturnValueOnce(1000);
+    nowSpy.mockReturnValueOnce(2500);
+    nowSpy.mockReturnValueOnce(2500);
+
+    await harness.press();
+    await harness.release();
+
+    expect(harness.speechStatsStore.recordSample).toHaveBeenCalledTimes(1);
+    expect(harness.speechStatsStore.recordSample).toHaveBeenCalledWith(harness.state.getSnapshot().lastSpeechSample);
+    nowSpy.mockRestore();
   });
 
   it("cleans up recorded audio after transcription failure", async () => {

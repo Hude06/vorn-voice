@@ -4,6 +4,7 @@ import { HotkeyService } from "../services/hotkeyService";
 import { ModelManager } from "../services/modelManager";
 import { PermissionService } from "../services/permissionService";
 import { SettingsStore } from "../services/settingsStore";
+import { SpeechStatsStore } from "../services/speechStatsStore";
 import { UpdateService } from "../services/updateService";
 import { WhisperService } from "../services/whisperService";
 import { AppState } from "../state/appState";
@@ -20,6 +21,7 @@ type HandlerDeps = {
   whisperService: WhisperService;
   updater: UpdateService;
   settingsStore: SettingsStore;
+  speechStatsStore: SpeechStatsStore;
   settingsWindow: SettingsWindow;
   preloadPath: string;
   rendererURL?: string;
@@ -27,6 +29,7 @@ type HandlerDeps = {
 
 export function registerIpcHandlers(deps: HandlerDeps): void {
   ipcMain.handle(IPC_CHANNELS.stateGet, () => deps.appState.getSnapshot());
+  ipcMain.handle(IPC_CHANNELS.speechStatsGet, () => deps.speechStatsStore.load());
   ipcMain.handle(IPC_CHANNELS.appVersionGet, () => app.getVersion());
 
   ipcMain.handle(IPC_CHANNELS.settingsSave, (_event, settings: AppSettings) => {
