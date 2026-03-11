@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { averageWpm, createEmptySpeechStats, wordsThisWeek } from "../../shared/speechStats";
 import {
@@ -51,7 +51,6 @@ type DraftUpdateOptions = {
 type SettingsTabId = "general" | "models" | "stats" | "advanced";
 
 type SettingsTabItem = {
-  description: string;
   id: SettingsTabId;
   label: string;
 };
@@ -60,10 +59,10 @@ const AUTOSAVE_DELAY_MS = 500;
 const TOAST_DURATION_MS = 1800;
 
 const SETTINGS_TABS: SettingsTabItem[] = [
-  { id: "general", label: "General", description: "Shortcut, dictation, and setup status" },
-  { id: "models", label: "Models", description: "Install and switch local models" },
-  { id: "stats", label: "Stats", description: "Lifetime totals and weekly trend" },
-  { id: "advanced", label: "Advanced", description: "Runtime, updates, and diagnostics" }
+  { id: "general", label: "General" },
+  { id: "models", label: "Models" },
+  { id: "stats", label: "Stats" },
+  { id: "advanced", label: "Advanced" }
 ];
 
 const ONBOARDING_STEPS = [
@@ -111,6 +110,7 @@ export function SettingsApp(): ReactElement {
   const lastSavedSignatureRef = useRef<string | null>(null);
   const lastSpeechSampleIdRef = useRef<string | null>(null);
   const requestSaveRef = useRef<(nextSettings: AppSettings, options?: { statusText?: string; toastText?: string }) => Promise<boolean>>(async () => false);
+  const settingsContentRef = useRef<HTMLElement | null>(null);
 
   const ready = Boolean(snapshot && draft && onboarding && onboardingVerification);
   const installedModels = useMemo(() => models.filter((model) => model.installed), [models]);
@@ -155,6 +155,18 @@ export function SettingsApp(): ReactElement {
     document.documentElement.dataset.theme = "dark";
     document.documentElement.style.colorScheme = "dark";
   }, []);
+
+  useLayoutEffect(() => {
+    if (windowMode !== "settings") {
+      return;
+    }
+
+    settingsContentRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [activeSettingsTab, windowMode]);
+
+  const selectSettingsTab = (tabId: SettingsTabId) => {
+    setActiveSettingsTab((currentTab) => (currentTab === tabId ? currentTab : tabId));
+  };
 
   useEffect(() => {
     if (!voicebar) {
@@ -700,49 +712,51 @@ export function SettingsApp(): ReactElement {
 
   return (
     <Shell>
-      <div className={cn("mx-auto grid min-h-screen items-start gap-4 px-3 py-3 md:gap-6 md:px-6 md:py-6 xl:grid-cols-[312px_minmax(0,1fr)]", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
-        <aside className="flex flex-col gap-4 self-start rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:p-7 xl:sticky xl:top-6">
+      <div className={cn("mx-auto flex h-screen min-h-0 w-full box-border flex-col gap-4 px-3 py-3 md:gap-6 md:px-6 md:py-6 xl:grid xl:grid-cols-[312px_minmax(0,1fr)]", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
+        <aside className="flex shrink-0 flex-col gap-4 rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:p-7">
           <div className="flex flex-col gap-2.5">
             <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Vorn Voice</span>
             <h1 className="text-3xl leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
             <p className="m-0 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
               {windowMode === "onboarding"
                 ? "Work through the essentials once, then Vorn can stay quietly in your menu bar."
-                : "Move between focused pages like a normal desktop app without losing the existing Vorn look."}
+                : "Adjust dictation, models, and system behavior."}
             </p>
           </div>
 
           {windowMode === "settings" ? (
-            <Card className={cn(CARD_BASE_CLASS, "p-3")}>
-              <nav aria-label="Settings sections" className="flex flex-col gap-2">
+            <Card className={cn(CARD_BASE_CLASS, "p-2.5")}>
+              <nav aria-label="Settings sections" className="flex flex-col gap-1.5">
                 {SETTINGS_TABS.map((tab) => (
                   <button
                     aria-current={activeSettingsTab === tab.id ? "page" : undefined}
                     className={cn(
-                      "flex w-full flex-col rounded-2xl border border-transparent px-4 py-3 text-left transition-colors",
+                      "flex min-h-11 w-full items-center rounded-xl border px-4 py-3 text-left text-[15px] font-medium transition-colors",
                       activeSettingsTab === tab.id
                         ? "border-[rgb(var(--accent))]/35 bg-[rgb(var(--accent))]/12 text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.16)]"
-                        : "bg-[rgb(var(--muted))] text-[rgb(var(--muted-foreground))] hover:border-[rgb(var(--border))] hover:bg-[#1b1b1b] hover:text-[rgb(var(--foreground))]"
+                        : "border-transparent bg-transparent text-[rgb(var(--muted-foreground))] hover:border-[rgb(var(--border))] hover:bg-[rgb(var(--muted))] hover:text-[rgb(var(--foreground))]"
                     )}
                     key={tab.id}
-                    onClick={() => setActiveSettingsTab(tab.id)}
+                    onClick={() => selectSettingsTab(tab.id)}
                     type="button"
                   >
-                    <strong className="text-sm">{tab.label}</strong>
-                    <span className="mt-1 text-xs leading-relaxed opacity-80">{tab.description}</span>
+                    <span>{tab.label}</span>
                   </button>
                 ))}
               </nav>
             </Card>
           ) : null}
 
-          <Card className={cn(CARD_BASE_CLASS, "p-4")}> 
-            <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
-            <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
-            <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
-            <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
-            <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
-            {windowMode === "settings" ? <SidebarStat label="This week" value={formatCount(wordsThisWeek(speechStats))} tone="neutral" /> : null}
+          <Card className={cn(CARD_BASE_CLASS, "p-4")}>
+            <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Overview</span>
+            <div className="mt-3">
+              <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
+              <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
+              <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
+              <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
+              <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
+              {windowMode === "settings" ? <SidebarStat label="This week" value={formatCount(wordsThisWeek(speechStats))} tone="neutral" /> : null}
+            </div>
           </Card>
 
           {windowMode === "onboarding" ? (
@@ -765,106 +779,99 @@ export function SettingsApp(): ReactElement {
                 ))}
               </div>
             </Card>
-          ) : (
-            <Card className={cn(CARD_BASE_CLASS, "p-4")}>
-              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">What matters most</span>
-              <p className="mt-3 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">Tune your model and dictation preferences here. Vorn saves changes automatically as you go.</p>
-              <div className="mt-3 flex flex-col gap-3">
-                <Button variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
-                <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" variant="outline" onClick={() => void resetOnboarding()} type="button">Run setup again</Button>
-              </div>
-            </Card>
-          )}
+          ) : null}
         </aside>
 
-        <main className="min-w-0 flex flex-col gap-5 pb-6 pt-0 md:pt-2 xl:pb-12">
-          {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
-          <Card className="rounded-2xl border-[#2f2f2f] bg-[#151515]">
-            <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Status</span>
-              <h2 className="mt-2 text-3xl tracking-tight">{setupReady ? "Ready to dictate" : "A few things still need attention"}</h2>
-              <p className="mt-1 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">{status.text}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Badge className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", status.tone === "success" ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-200" : status.tone === "warning" ? "border-amber-500/40 bg-amber-950/40 text-amber-200" : status.tone === "danger" ? "border-red-500/40 bg-red-950/40 text-red-200" : "border-[rgb(var(--border))] bg-[#111111] text-[rgb(var(--muted-foreground))]" )} variant="outline">
-                {status.tone === "success" ? "Healthy" : status.tone === "warning" ? "Needs review" : status.tone === "danger" ? "Issue" : "Checking"}
-              </Badge>
-              <Button variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
-            </div>
-            </CardHeader>
-          </Card>
+        <main ref={settingsContentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable] md:pr-2 xl:pr-3">
+          <div className="flex min-h-full flex-col gap-5 pb-6 pt-0 md:pt-2 xl:pb-12">
+            {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
+            <Card className="rounded-2xl border-[#2f2f2f] bg-[#151515]">
+              <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Status</span>
+                  <h2 className="mt-2 text-3xl tracking-tight">{setupReady ? "Ready to dictate" : "A few things still need attention"}</h2>
+                  <p className="mt-1 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">{status.text}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Badge className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", status.tone === "success" ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-200" : status.tone === "warning" ? "border-amber-500/40 bg-amber-950/40 text-amber-200" : status.tone === "danger" ? "border-red-500/40 bg-red-950/40 text-red-200" : "border-[rgb(var(--border))] bg-[#111111] text-[rgb(var(--muted-foreground))]" )} variant="outline">
+                    {status.tone === "success" ? "Healthy" : status.tone === "warning" ? "Needs review" : status.tone === "danger" ? "Issue" : "Checking"}
+                  </Badge>
+                  <Button variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
+                </div>
+              </CardHeader>
+            </Card>
 
-          {windowMode === "onboarding" ? (
-            <OnboardingView
-              accessibilityReady={accessibilityReady}
-              activeModelId={draft.activeModelId}
-              activeModelInstalled={activeModelInstalled}
-              beginHotkeyCapture={beginHotkeyCapture}
-              cancelHotkeyCapture={cancelHotkeyCapture}
-              capturePending={capturePending}
-              completeDisabled={!completeReady || completingOnboarding || saving}
-              completingOnboarding={completingOnboarding}
-              dictationTestReady={dictationTestReady}
-              draft={draft}
-              downloadModel={downloadModel}
-              downloadModelId={downloadModelId}
-              hotkeyReady={hotkeyReady}
-              installRuntime={installRuntime}
-              installingRuntime={installingRuntime}
-              microphoneGranted={microphoneGranted}
-              models={models}
-              onboardingStep={onboardingStep}
-              onboardingVerification={onboardingVerification!}
-              onboardingVerified={onboardingVerified}
-              openPrivacy={openPrivacy}
-              permissionState={permissionState}
-              removeModel={removeModel}
-              removingModelId={removingModelId}
-              requestMicrophone={requestMicrophone}
-              runtimeReady={runtimeReady}
-              saveCurrentDraft={saveCurrentDraft}
-              setDraft={updateDraft}
-              setOnboardingStep={setOnboardingStep}
-              setupReady={setupReady}
-              finishOnboarding={finishOnboarding}
-            />
-          ) : (
-            <SettingsView
-              activeTab={activeSettingsTab}
-              accessibilityReady={accessibilityReady}
-              activeModel={activeModel}
-              activeModelInstalled={activeModelInstalled}
-              appVersion={appVersion}
-              beginHotkeyCapture={beginHotkeyCapture}
-              cancelHotkeyCapture={cancelHotkeyCapture}
-              capturePending={capturePending}
-              checkForUpdates={checkForUpdates}
-              checkingForUpdates={checkingForUpdates}
-              downloadModel={downloadModel}
-              downloadModelId={downloadModelId}
-              draft={draft}
-              hotkeyReady={hotkeyReady}
-              installRuntime={installRuntime}
-              installUpdate={installUpdate}
-              installingUpdate={installingUpdate}
-              installingRuntime={installingRuntime}
-              microphoneGranted={microphoneGranted}
-              models={models}
-              openPrivacy={openPrivacy}
-              permissionState={permissionState}
-              removeModel={removeModel}
-              removingModelId={removingModelId}
-              requestMicrophone={requestMicrophone}
-              resetOnboarding={resetOnboarding}
-              runtimeReady={runtimeReady}
-              runtimeState={runtimeState}
-              speechStats={speechStats}
-              snapshot={snapshot!}
-              setDraft={updateDraft}
-              updateState={updateState}
-            />
-          )}
+            {windowMode === "onboarding" ? (
+              <OnboardingView
+                accessibilityReady={accessibilityReady}
+                activeModelId={draft.activeModelId}
+                activeModelInstalled={activeModelInstalled}
+                beginHotkeyCapture={beginHotkeyCapture}
+                cancelHotkeyCapture={cancelHotkeyCapture}
+                capturePending={capturePending}
+                completeDisabled={!completeReady || completingOnboarding || saving}
+                completingOnboarding={completingOnboarding}
+                dictationTestReady={dictationTestReady}
+                draft={draft}
+                downloadModel={downloadModel}
+                downloadModelId={downloadModelId}
+                hotkeyReady={hotkeyReady}
+                installRuntime={installRuntime}
+                installingRuntime={installingRuntime}
+                microphoneGranted={microphoneGranted}
+                models={models}
+                onboardingStep={onboardingStep}
+                onboardingVerification={onboardingVerification!}
+                onboardingVerified={onboardingVerified}
+                openPrivacy={openPrivacy}
+                permissionState={permissionState}
+                removeModel={removeModel}
+                removingModelId={removingModelId}
+                requestMicrophone={requestMicrophone}
+                runtimeReady={runtimeReady}
+                saveCurrentDraft={saveCurrentDraft}
+                setDraft={updateDraft}
+                setOnboardingStep={setOnboardingStep}
+                setupReady={setupReady}
+                finishOnboarding={finishOnboarding}
+              />
+            ) : (
+              <SettingsView
+                activeTab={activeSettingsTab}
+                accessibilityReady={accessibilityReady}
+                activeModel={activeModel}
+                activeModelInstalled={activeModelInstalled}
+                appVersion={appVersion}
+                beginHotkeyCapture={beginHotkeyCapture}
+                cancelHotkeyCapture={cancelHotkeyCapture}
+                capturePending={capturePending}
+                checkForUpdates={checkForUpdates}
+                checkingForUpdates={checkingForUpdates}
+                downloadModel={downloadModel}
+                downloadModelId={downloadModelId}
+                draft={draft}
+                hotkeyReady={hotkeyReady}
+                installRuntime={installRuntime}
+                installUpdate={installUpdate}
+                installingUpdate={installingUpdate}
+                installingRuntime={installingRuntime}
+                microphoneGranted={microphoneGranted}
+                models={models}
+                openPrivacy={openPrivacy}
+                permissionState={permissionState}
+                removeModel={removeModel}
+                removingModelId={removingModelId}
+                requestMicrophone={requestMicrophone}
+                resetOnboarding={resetOnboarding}
+                runtimeReady={runtimeReady}
+                runtimeState={runtimeState}
+                speechStats={speechStats}
+                snapshot={snapshot!}
+                setDraft={updateDraft}
+                updateState={updateState}
+              />
+            )}
+          </div>
         </main>
       </div>
     </Shell>
