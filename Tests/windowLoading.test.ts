@@ -6,6 +6,7 @@ type MockWindow = {
   show: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  setTitle: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   loadFile: ReturnType<typeof vi.fn>;
@@ -30,6 +31,7 @@ vi.mock("electron", () => {
         show: vi.fn(),
         hide: vi.fn(),
         focus: vi.fn(),
+        setTitle: vi.fn(),
         on: vi.fn(),
         loadURL: vi.fn().mockResolvedValue(undefined),
         loadFile: vi.fn().mockResolvedValue(undefined),
@@ -71,9 +73,29 @@ describe("window loaders", () => {
     settingsWindow.show("/tmp/preload.js", "http://127.0.0.1:5173");
 
     expect(BrowserWindow).toHaveBeenCalledTimes(1);
-    const [options] = vi.mocked(BrowserWindow).mock.calls[0] as [{ webPreferences: { sandbox: boolean } }];
+    const [options] = vi.mocked(BrowserWindow).mock.calls[0] as [{ webPreferences: { sandbox: boolean }; show: boolean; backgroundColor: string }];
     expect(options.webPreferences.sandbox).toBe(false);
+    expect(options.show).toBe(false);
+    expect(options.backgroundColor).toBe("#050505");
     expect(createdWindows[0].loadURL).toHaveBeenCalledWith("http://127.0.0.1:5173/settings/index.html?mode=settings");
+  });
+
+  it("reveals the settings window after the renderer finishes loading", async () => {
+    const { SettingsWindow } = await import("../src/main/windows/settingsWindow");
+
+    const settingsWindow = new SettingsWindow();
+    settingsWindow.show("/tmp/preload.js", "http://127.0.0.1:5173");
+
+    expect(createdWindows[0].show).not.toHaveBeenCalled();
+    expect(createdWindows[0].focus).not.toHaveBeenCalled();
+
+    const didFinishLoad = createdWindows[0].webContents.on.mock.calls.find(([eventName]) => eventName === "did-finish-load")?.[1] as (() => void) | undefined;
+
+    expect(didFinishLoad).toBeTypeOf("function");
+    didFinishLoad?.();
+
+    expect(createdWindows[0].show).toHaveBeenCalledTimes(1);
+    expect(createdWindows[0].focus).toHaveBeenCalledTimes(1);
   });
 
   it("loads settings html file in production mode", async () => {
