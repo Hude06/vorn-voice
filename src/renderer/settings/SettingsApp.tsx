@@ -75,7 +75,7 @@ const ONBOARDING_STEPS = [
 const CARD_BASE_CLASS = "rounded-2xl border-[rgb(var(--border))] bg-[rgb(var(--card))]";
 const SUB_PANEL_CLASS = "rounded-2xl border border-[rgb(var(--border))] bg-[#151515] p-4";
 const TOKEN_BADGE_CLASS = "rounded-full bg-[#151515] text-[rgb(var(--muted-foreground))]";
-const FULLSCREEN_CONTENT_WIDTH_CLASS = "w-full max-w-[min(1500px,calc(100vw-24px))] lg:max-w-[min(1540px,calc(100vw-56px))]";
+const FULLSCREEN_CONTENT_WIDTH_CLASS = "w-full max-w-[min(1540px,100vw)]";
 
 export function SettingsApp(): ReactElement {
   const voicebar = getVoicebarApi();
@@ -712,78 +712,66 @@ export function SettingsApp(): ReactElement {
 
   return (
     <Shell>
-      <div className={cn("mx-auto flex h-screen min-h-0 w-full box-border flex-col gap-4 px-3 py-3 md:gap-6 md:px-6 md:py-6 xl:grid xl:grid-cols-[312px_minmax(0,1fr)]", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
-        <aside className="flex shrink-0 flex-col gap-4 rounded-3xl border border-[rgb(var(--border))] bg-[rgb(var(--card))]/95 p-5 backdrop-blur-sm md:p-7">
-          <div className="flex flex-col gap-2.5">
+      <div className={cn("mx-auto flex min-h-screen w-full flex-col lg:h-screen lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:overflow-hidden", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
+        <aside className="flex min-h-0 shrink-0 flex-col border-b border-[#171717] bg-black lg:h-screen lg:border-b-0 lg:border-r">
+          <div className="border-b border-[#171717] px-5 py-5 lg:px-6 lg:py-6">
             <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Vorn Voice</span>
-            <h1 className="text-3xl leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
-            <p className="m-0 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
+            <h1 className="mt-3 text-[28px] leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
+            <p className="mt-2 m-0 max-w-xs text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
               {windowMode === "onboarding"
                 ? "Work through the essentials once, then Vorn can stay quietly in your menu bar."
                 : "Adjust dictation, models, and system behavior."}
             </p>
           </div>
 
-          {windowMode === "settings" ? (
-            <Card className={cn(CARD_BASE_CLASS, "p-2.5")}>
-              <nav aria-label="Settings sections" className="flex flex-col gap-1.5">
-                {SETTINGS_TABS.map((tab) => (
-                  <button
-                    aria-current={activeSettingsTab === tab.id ? "page" : undefined}
-                    className={cn(
-                      "flex min-h-11 w-full items-center rounded-xl border px-4 py-3 text-left text-[15px] font-medium transition-colors",
-                      activeSettingsTab === tab.id
-                        ? "border-[rgb(var(--accent))]/35 bg-[rgb(var(--accent))]/12 text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.16)]"
-                        : "border-transparent bg-transparent text-[rgb(var(--muted-foreground))] hover:border-[rgb(var(--border))] hover:bg-[rgb(var(--muted))] hover:text-[rgb(var(--foreground))]"
-                    )}
-                    key={tab.id}
-                    onClick={() => selectSettingsTab(tab.id)}
-                    type="button"
-                  >
-                    <span>{tab.label}</span>
-                  </button>
-                ))}
-              </nav>
-            </Card>
-          ) : null}
-
-          <Card className={cn(CARD_BASE_CLASS, "p-4")}>
-            <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Overview</span>
-            <div className="mt-3">
-              <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
-              <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
-              <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
-              <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
-              <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
-              {windowMode === "settings" ? <SidebarStat label="This week" value={formatCount(wordsThisWeek(speechStats))} tone="neutral" /> : null}
-            </div>
-          </Card>
-
-          {windowMode === "onboarding" ? (
-            <Card className={cn(CARD_BASE_CLASS, "p-4")}>
-              <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Setup steps</span>
-              <div className="mt-3 flex flex-col gap-3">
-                {ONBOARDING_STEPS.map((step, index) => (
-                  <button
-                    key={step}
-                    className={cn(
-                      "flex items-center gap-3 rounded-2xl border border-transparent bg-[rgb(var(--muted))] px-3.5 py-3 text-left text-sm text-[rgb(var(--muted-foreground))] transition-colors",
-                      index === onboardingStep && "border-[rgb(var(--border))] bg-[#1b1b1b] text-[rgb(var(--foreground))]"
-                    )}
-                    onClick={() => setOnboardingStep(index)}
-                    type="button"
-                  >
-                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[#2f2f2f] bg-[#1b1b1b] text-xs text-[rgb(var(--foreground))]">{index + 1}</span>
-                    <strong>{step}</strong>
-                  </button>
-                ))}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-5 lg:px-4 lg:py-6">
+            {windowMode === "settings" ? (
+              <div className="flex flex-col gap-2">
+                <span className="px-3.5 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Navigation</span>
+                <nav aria-label="Settings sections" className="flex flex-col gap-1">
+                  {SETTINGS_TABS.map((tab) => (
+                    <SidebarNavButton
+                      active={activeSettingsTab === tab.id}
+                      key={tab.id}
+                      label={tab.label}
+                      onClick={() => selectSettingsTab(tab.id)}
+                    />
+                  ))}
+                </nav>
               </div>
-            </Card>
-          ) : null}
+            ) : (
+              <div className="flex flex-col gap-2">
+                <span className="px-3.5 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">Setup</span>
+                <div className="flex flex-col gap-1">
+                  {ONBOARDING_STEPS.map((step, index) => (
+                    <SidebarStepButton
+                      active={index === onboardingStep}
+                      index={index + 1}
+                      key={step}
+                      label={step}
+                      onClick={() => setOnboardingStep(index)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col gap-2 lg:mt-auto">
+              <span className="px-3.5 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--muted-foreground))]/70">{windowMode === "onboarding" ? "System status" : "Overview"}</span>
+              <div className="rounded-2xl border border-[#171717] bg-[#050505] px-4 py-2">
+                <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
+                <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
+                <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
+                <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
+                <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
+                {windowMode === "settings" ? <SidebarStat label="This week" value={formatCount(wordsThisWeek(speechStats))} tone="neutral" /> : null}
+              </div>
+            </div>
+          </div>
         </aside>
 
-        <main ref={settingsContentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable] md:pr-2 xl:pr-3">
-          <div className="flex min-h-full flex-col gap-5 pb-6 pt-0 md:pt-2 xl:pb-12">
+        <main ref={settingsContentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,#090909,#050505)] [scrollbar-gutter:stable]">
+          <div className="flex min-h-full flex-col gap-5 px-3 py-4 sm:px-5 sm:py-5 lg:px-7 lg:py-7 xl:px-9 xl:py-8 xl:pb-12">
             {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
             <Card className="rounded-2xl border-[#2f2f2f] bg-[#151515]">
               <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1671,10 +1659,68 @@ function SidebarStat({ label, tone, value }: SidebarStatProps): ReactElement {
   };
 
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border))]/80 py-2.5 last:border-b-0 last:pb-0">
+    <div className="flex items-center justify-between gap-3 border-b border-[#171717] py-2.5 last:border-b-0">
       <span className="text-sm text-[rgb(var(--muted-foreground))]">{label}</span>
-      <strong className={cn("text-sm", toneClass[tone])}>{value}</strong>
+      <strong className={cn("text-right text-sm font-medium", toneClass[tone])}>{value}</strong>
     </div>
+  );
+}
+
+type SidebarNavButtonProps = {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+};
+
+function SidebarNavButton({ active, label, onClick }: SidebarNavButtonProps): ReactElement {
+  return (
+    <button
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex min-h-11 w-full items-center rounded-xl px-3.5 py-2.5 text-left text-[15px] font-medium transition-colors",
+        active
+          ? "bg-[#242424] text-[rgb(var(--foreground))]"
+          : "text-[rgb(var(--muted-foreground))] hover:bg-[#151515] hover:text-[rgb(var(--foreground))]"
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+type SidebarStepButtonProps = {
+  active: boolean;
+  index: number;
+  label: string;
+  onClick: () => void;
+};
+
+function SidebarStepButton({ active, index, label, onClick }: SidebarStepButtonProps): ReactElement {
+  return (
+    <button
+      className={cn(
+        "flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-sm transition-colors",
+        active
+          ? "bg-[#242424] text-[rgb(var(--foreground))]"
+          : "text-[rgb(var(--muted-foreground))] hover:bg-[#151515] hover:text-[rgb(var(--foreground))]"
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      <span
+        className={cn(
+          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+          active
+            ? "border-[#3a3a3a] bg-[#0d0d0d] text-[rgb(var(--foreground))]"
+            : "border-[#262626] bg-[#080808] text-[rgb(var(--muted-foreground))]"
+        )}
+      >
+        {index}
+      </span>
+      <strong className="truncate font-medium">{label}</strong>
+    </button>
   );
 }
 
@@ -1683,7 +1729,7 @@ type ShellProps = {
 };
 
 function Shell({ children }: ShellProps): ReactElement {
-  return <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(249,115,22,0.12),_transparent_55%),linear-gradient(180deg,#050505,#090909)] text-[rgb(var(--foreground))]">{children}</div>;
+  return <div className="min-h-screen bg-[#050505] text-[rgb(var(--foreground))]">{children}</div>;
 }
 
 type EmptyStateProps = {
