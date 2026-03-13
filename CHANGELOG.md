@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-13
+
+- Expand Vorn Voice from a macOS-only menu bar app into a broader desktop release target by adding Windows packaging, platform-specific deploy commands, runtime asset manifests, and platform-aware default shortcuts and shell copy.
+- Refactor speech runtime discovery so `whisper-cli` and `sox` are both tracked as required runtime tools, with richer diagnostics, platform-aware executable resolution, improved packaged-runtime recovery messaging, and safer child-process shutdown for capture and transcription commands.
+- Generalize permissions and auto-paste handling across platforms with typed system-settings targets, microphone preflight states, Windows PowerShell paste automation support, and clearer user-facing guidance when microphone or paste access is blocked.
+- Rework settings and onboarding bootstrap to load critical data first, tolerate optional-data failures, treat hotkey behavior as part of onboarding verification, and polish the settings window for desktop use with platform-aware onboarding guidance and window chrome.
+- Harden persistence and migration by refusing to overwrite unreadable settings or speech-stats files, importing legacy `voicebar` and `Voicebar` data when possible, and preserving onboarding verification metadata for the active shortcut and hotkey mode.
+- Stop assuming a bundled default model on first run, improve model lookup/removal across legacy storage locations, and broaden regression coverage for onboarding helpers, bootstrap resilience, Windows runtime behavior, process termination, IPC payloads, and storage migration paths.
+
 ## 2026-03-10
 
 - Redesign the settings window into a left-tab layout so General, Models, Stats, and Advanced pages feel like a native desktop app while keeping the existing Vorn theme.

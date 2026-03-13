@@ -22,7 +22,7 @@ describe("shortcut helpers", () => {
 
   it("rejects shift-only shortcuts", () => {
     expect(validateShortcut({ keyCode: 19, modifiers: ["shift"] })).toBe(
-      "Shortcut must include Command, Control, or Option"
+      "Shortcut must include a primary modifier key"
     );
   });
 
@@ -36,6 +36,11 @@ describe("shortcut helpers", () => {
 
   it("converts shortcut to electron accelerator", () => {
     expect(toElectronAccelerator({ keyCode: 19, modifiers: ["cmd", "shift"] })).toBe("Command+Shift+R");
+  });
+
+  it("formats modifiers with Windows labels when requested", () => {
+    expect(formatShortcut({ keyCode: 19, modifiers: ["ctrl", "shift"] }, { platform: "windows" })).toBe("Ctrl + Shift + R");
+    expect(toElectronAccelerator({ keyCode: 19, modifiers: ["cmd"] }, { platform: "windows" })).toBe("Super+R");
   });
 
   it("returns undefined for unsupported accelerator keycodes", () => {

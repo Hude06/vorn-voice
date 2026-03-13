@@ -1,4 +1,5 @@
 import { KeyboardShortcut } from "./types";
+import { detectDesktopPlatform, type DesktopPlatform } from "./platform";
 
 const UIOHOOK_KEY_NAMES: Record<number, string> = {
   1: "Escape",
@@ -133,16 +134,20 @@ const LEGACY_ACCELERATOR_KEYS: Record<number, string> = {
   ...LEGACY_LETTERS
 };
 
-export function formatShortcut(shortcut: KeyboardShortcut): string {
+export function formatShortcut(
+  shortcut: KeyboardShortcut,
+  options: { platform?: DesktopPlatform } = {}
+): string {
   if (shortcut.display) {
     return shortcut.display;
   }
 
+  const platform = options.platform ?? detectDesktopPlatform();
   const parts: string[] = [];
-  if (shortcut.modifiers.includes("ctrl")) parts.push("Control");
-  if (shortcut.modifiers.includes("alt")) parts.push("Option");
+  if (shortcut.modifiers.includes("ctrl")) parts.push(platform === "windows" ? "Ctrl" : "Control");
+  if (shortcut.modifiers.includes("alt")) parts.push(platform === "macos" ? "Option" : "Alt");
   if (shortcut.modifiers.includes("shift")) parts.push("Shift");
-  if (shortcut.modifiers.includes("cmd")) parts.push("Command");
+  if (shortcut.modifiers.includes("cmd")) parts.push(platform === "macos" ? "Command" : platform === "windows" ? "Win" : "Super");
 
   const keyName =
     UIOHOOK_KEY_NAMES[shortcut.keyCode] ??
@@ -168,7 +173,7 @@ export function validateShortcut(shortcut: KeyboardShortcut): string | undefined
 
   const hasNonShiftModifier = shortcut.modifiers.some((modifier) => modifier !== "shift");
   if (!hasNonShiftModifier) {
-    return "Shortcut must include Command, Control, or Option";
+    return "Shortcut must include a primary modifier key";
   }
 
   if (!toElectronAccelerator(shortcut)) {
@@ -178,14 +183,18 @@ export function validateShortcut(shortcut: KeyboardShortcut): string | undefined
   return undefined;
 }
 
-export function toElectronAccelerator(shortcut: KeyboardShortcut): string | undefined {
+export function toElectronAccelerator(
+  shortcut: KeyboardShortcut,
+  options: { platform?: DesktopPlatform } = {}
+): string | undefined {
   const key = UIOHOOK_ACCELERATOR_KEYS[shortcut.keyCode] ?? LEGACY_ACCELERATOR_KEYS[shortcut.keyCode];
   if (!key) {
     return undefined;
   }
 
+  const platform = options.platform ?? detectDesktopPlatform();
   const parts: string[] = [];
-  if (shortcut.modifiers.includes("cmd")) parts.push("Command");
+  if (shortcut.modifiers.includes("cmd")) parts.push(platform === "macos" ? "Command" : "Super");
   if (shortcut.modifiers.includes("ctrl")) parts.push("Control");
   if (shortcut.modifiers.includes("alt")) parts.push("Alt");
   if (shortcut.modifiers.includes("shift")) parts.push("Shift");

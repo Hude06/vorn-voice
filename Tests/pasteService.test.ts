@@ -42,13 +42,7 @@ describe("PasteService clipboard restore", () => {
     clipboardState.rtf = "";
     vi.clearAllMocks();
     vi.useFakeTimers();
-    spawnMock.mockImplementation(() => ({
-      on: (event: string, listener: (value?: number | Error) => void) => {
-        if (event === "exit") {
-          listener(0);
-        }
-      }
-    }));
+    spawnMock.mockImplementation(() => createChild());
   });
 
   it("restores the previous clipboard when unchanged after paste", async () => {
@@ -121,4 +115,53 @@ describe("PasteService clipboard restore", () => {
     expect(clipboardState.html).toBe("<b>previous</b>");
     expect(clipboardState.rtf).toBe("{\\rtf1 previous}");
   });
+
+  it("reports Windows helper availability when PowerShell exists", async () => {
+    const { PasteService } = await import("../src/main/services/pasteService");
+
+    const service = new PasteService("windows");
+
+    await expect(service.getAvailability()).resolves.toEqual({ supported: true });
+  });
+
+  it("reports Windows helper-missing availability when PowerShell is absent", async () => {
+    const { PasteService } = await import("../src/main/services/pasteService");
+    spawnMock.mockImplementationOnce(() => createChild({ error: Object.assign(new Error("missing"), { code: "ENOENT" }) }));
+
+    const service = new PasteService("windows");
+
+    await expect(service.getAvailability()).resolves.toEqual({
+      supported: false,
+      statusMessage: "Auto-paste is unavailable because PowerShell could not be found."
+    });
+  });
+
+  it("classifies Windows paste timeouts with manual-paste guidance", async () => {
+    const { PasteService } = await import("../src/main/services/pasteService");
+    spawnMock.mockImplementationOnce(() => createChild({ exitCode: undefined }));
+    spawnMock.mockImplementationOnce(() => createChild({ exitCode: undefined }));
+
+    const service = new PasteService("windows");
+
+    const pastePromise = service.pasteText("transcript", false);
+    const assertion = expect(pastePromise).rejects.toThrow("Auto-paste timed out. Paste manually or disable auto-paste.");
+    await vi.advanceTimersByTimeAsync(4_500);
+
+    await assertion;
+  });
 });
+
+function createChild(options: { error?: NodeJS.ErrnoException; exitCode?: number } = { exitCode: 0 }) {
+  return {
+    on: (event: string, listener: (value?: number | Error) => void) => {
+      if (event === "error" && options.error) {
+        listener(options.error);
+      }
+
+      if (event === "exit" && options.exitCode !== undefined) {
+        listener(options.exitCode);
+      }
+    },
+    kill: vi.fn()
+  };
+}

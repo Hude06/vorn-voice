@@ -111,7 +111,8 @@ describe("main process startup", () => {
       SettingsStore: vi.fn(() => ({
         load: vi.fn(() => {
           throw new Error("settings exploded");
-        })
+        }),
+        resolveSettingsWindowMode: vi.fn(() => "settings")
       }))
     }));
     vi.doMock("../src/main/coordinator", () => ({ AppCoordinator: vi.fn() }));

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import { ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { detectDesktopPlatform, type DesktopPlatform } from "../../shared/platform";
 import { AudioSignalStats, DEFAULT_SETTINGS, SpeechCaptureDiagnostics, SpeechCleanupMode } from "../../shared/types";
-import { resolveBundledExecutable } from "./runtimeAssetPaths";
+import { terminateChildProcess } from "./processTermination";
+import { executableFileName, locateRuntimeExecutable } from "./runtimeResolver";
 
 type CommandResult = {
   code: number;
@@ -39,6 +40,7 @@ const PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BYTES_PER_SAMP
 const PCM_BYTES_PER_MS = PCM_BYTES_PER_SECOND / 1000;
 const RING_BUFFER_MAX_MS = 2500;
 const RING_BUFFER_MAX_BYTES = Math.round(PCM_BYTES_PER_MS * RING_BUFFER_MAX_MS);
+const PROCESS_TERMINATION_TIMEOUT_MS = 2_500;
 
 const PREPROCESS_EFFECTS: Record<Exclude<SpeechCleanupMode, "off">, string[]> = {
   balanced: ["highpass", "80", "gain", "-n", "-3"],
@@ -62,6 +64,7 @@ const PREPROCESS_EFFECTS: Record<Exclude<SpeechCleanupMode, "off">, string[]> = 
 };
 
 export class AudioCaptureService {
+  private readonly platform: DesktopPlatform;
   private process?: ChildProcess;
   private outputPath?: string;
   private lastDiagnostics?: SpeechCaptureDiagnostics;
@@ -79,6 +82,10 @@ export class AudioCaptureService {
   private persistentSession?: PersistentSession;
   private persistentRestartCount = 0;
   private captureReadyLatencyMs?: number;
+
+  constructor(platform: DesktopPlatform = detectDesktopPlatform(process.platform)) {
+    this.platform = platform;
+  }
 
   configureRealtimeCapture(config: RealtimeCaptureConfig): void {
     this.captureConfig = {
@@ -137,22 +144,12 @@ export class AudioCaptureService {
       const keyupToCaptureStoppedMs = Date.now() - stopStartedAt;
 
       const tempRawPath = path.join(os.tmpdir(), `voicebar-persistent-${randomUUID()}.raw`);
-      const wavPath = path.join(os.tmpdir(), `voicebar-${randomUUID()}.wav`);
 
       await fs.writeFile(tempRawPath, rawAudio);
 
       const recorderPath = await this.resolveRecorderPath();
-      const convertResult = await this.runCommand(
-        recorderPath,
-        ["-q", "-t", "raw", "-r", "16000", "-b", "16", "-e", "signed", "-c", "1", tempRawPath, wavPath],
-        60_000
-      );
+      const wavPath = await this.convertRawPcmToWav(recorderPath, tempRawPath);
       await fs.unlink(tempRawPath).catch(() => undefined);
-
-      if (convertResult.code !== 0) {
-        await fs.unlink(wavPath).catch(() => undefined);
-        throw new Error(convertResult.stderr.trim() || "Audio capture failed: could not finalize audio");
-      }
 
       const metadata = {
         captureBackend: "persistent" as const,
@@ -179,14 +176,9 @@ export class AudioCaptureService {
       this.process = undefined;
       this.outputPath = undefined;
 
-      await new Promise<void>((resolve) => {
-        if (process.exitCode !== null || process.killed) {
-          resolve();
-          return;
-        }
-
-        process.once("exit", () => resolve());
-        process.kill("SIGINT");
+      await terminateChildProcess(process, {
+        platform: this.platform,
+        totalTimeoutMs: PROCESS_TERMINATION_TIMEOUT_MS
       });
 
       await fs.unlink(outputPath).catch(() => undefined);
@@ -203,11 +195,14 @@ export class AudioCaptureService {
     }
 
     this.lastDiagnostics = undefined;
-    const outputPath = path.join(os.tmpdir(), `voicebar-${randomUUID()}.wav`);
+    const outputPath = path.join(
+      os.tmpdir(),
+      `voicebar-${randomUUID()}.${this.usesRawSpawnCapture() ? "raw" : "wav"}`
+    );
     this.outputPath = outputPath;
 
     const recorderPath = await this.resolveRecorderPath();
-    const process = spawn(recorderPath, ["-q", "-d", "-c", "1", "-r", "16000", "-b", "16", outputPath]);
+    const process = spawn(recorderPath, this.spawnCaptureArgs(outputPath));
 
     await new Promise<void>((resolve, reject) => {
       process.once("spawn", () => resolve());
@@ -227,18 +222,18 @@ export class AudioCaptureService {
     const process = this.process;
     const outputPath = this.outputPath;
 
-    await new Promise<void>((resolve) => {
-      if (process.exitCode !== null || process.killed) {
-        resolve();
-        return;
-      }
-
-      process.once("exit", () => resolve());
-      process.kill("SIGINT");
+    const stopped = await terminateChildProcess(process, {
+      platform: this.platform,
+      totalTimeoutMs: PROCESS_TERMINATION_TIMEOUT_MS
     });
 
     this.process = undefined;
     this.outputPath = undefined;
+
+    if (!stopped) {
+      await fs.unlink(outputPath).catch(() => undefined);
+      throw new Error("Audio capture failed: recorder did not stop in time");
+    }
 
     const stat = await fs.stat(outputPath).catch(() => null);
     if (!stat) {
@@ -250,7 +245,15 @@ export class AudioCaptureService {
       throw new Error("No speech detected");
     }
 
-    return this.finalizeCapture(outputPath, requestedCleanupMode, {
+    const capturedPath = this.usesRawSpawnCapture()
+      ? await this.convertRawPcmToWav(await this.resolveRecorderPath(), outputPath)
+      : outputPath;
+
+    if (capturedPath !== outputPath) {
+      await fs.unlink(outputPath).catch(() => undefined);
+    }
+
+    return this.finalizeCapture(capturedPath, requestedCleanupMode, {
       captureBackend: "spawn",
       keydownToCaptureReadyMs: this.captureReadyLatencyMs,
       keyupToCaptureStoppedMs
@@ -337,13 +340,45 @@ export class AudioCaptureService {
 
   private stopPersistentCapture(): void {
     if (this.persistentProcess && this.persistentProcess.exitCode === null && !this.persistentProcess.killed) {
-      this.persistentProcess.kill("SIGTERM");
+      void terminateChildProcess(this.persistentProcess, {
+        platform: this.platform,
+        gracefulSignal: "SIGTERM",
+        totalTimeoutMs: PROCESS_TERMINATION_TIMEOUT_MS
+      });
     }
 
     this.persistentProcess = undefined;
     this.persistentSession = undefined;
     this.ringChunks = [];
     this.ringBytes = 0;
+  }
+
+  private usesRawSpawnCapture(): boolean {
+    return this.platform === "windows";
+  }
+
+  private spawnCaptureArgs(outputPath: string): string[] {
+    if (this.usesRawSpawnCapture()) {
+      return ["-q", "-d", "-c", "1", "-r", "16000", "-b", "16", "-e", "signed", "-t", "raw", outputPath];
+    }
+
+    return ["-q", "-d", "-c", "1", "-r", "16000", "-b", "16", outputPath];
+  }
+
+  private async convertRawPcmToWav(recorderPath: string, rawPath: string): Promise<string> {
+    const wavPath = path.join(os.tmpdir(), `voicebar-${randomUUID()}.wav`);
+    const convertResult = await this.runCommand(
+      recorderPath,
+      ["-q", "-t", "raw", "-r", "16000", "-b", "16", "-e", "signed", "-c", "1", rawPath, wavPath],
+      60_000
+    );
+
+    if (convertResult.code !== 0) {
+      await fs.unlink(wavPath).catch(() => undefined);
+      throw new Error(convertResult.stderr.trim() || "Audio capture failed: could not finalize audio");
+    }
+
+    return wavPath;
   }
 
   private pushRingChunk(chunk: Buffer): void {
@@ -525,23 +560,15 @@ export class AudioCaptureService {
   }
 
   private async resolveRecorderPathUncached(): Promise<string> {
-    const preferredPaths = [
-      await resolveBundledExecutable("bin", "sox"),
-      process.env.VOX_SOX_PATH,
-      "/opt/homebrew/bin/sox",
-      "/usr/local/bin/sox"
-    ].filter((candidate): candidate is string => Boolean(candidate));
+    const lookup = await locateRuntimeExecutable({
+      baseNames: ["sox"],
+      envKeys: ["VOX_SOX_PATH", "SOX_PATH"],
+      fixedCandidates: this.platform === "macos"
+        ? ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"]
+        : []
+    });
 
-    for (const candidate of preferredPaths) {
-      try {
-        await fs.access(candidate, fsConstants.X_OK);
-        return candidate;
-      } catch {
-        continue;
-      }
-    }
-
-    return "sox";
+    return lookup.path ?? executableFileName("sox");
   }
 
   private async analyzeAudio(recorderPath: string, audioPath: string): Promise<AudioSignalStats | undefined> {
@@ -571,6 +598,17 @@ export class AudioCaptureService {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
+
+      const finish = (result: CommandResult): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
@@ -580,24 +618,28 @@ export class AudioCaptureService {
       });
 
       const timer = setTimeout(() => {
-        child.kill("SIGTERM");
+        void terminateChildProcess(child, {
+          platform: this.platform,
+          gracefulSignal: "SIGTERM",
+          totalTimeoutMs: PROCESS_TERMINATION_TIMEOUT_MS
+        }).then(() => {
+          finish({ code: -1, stdout, stderr: stderr || "Audio command timed out" });
+        });
       }, timeoutMs);
 
       child.on("error", (error) => {
-        clearTimeout(timer);
-        resolve({ code: -1, stdout, stderr: stderr || error.message });
+        finish({ code: -1, stdout, stderr: stderr || error.message });
       });
 
       child.on("exit", (code) => {
-        clearTimeout(timer);
-        resolve({ code: code ?? -1, stdout, stderr });
+        finish({ code: code ?? -1, stdout, stderr });
       });
     });
   }
 
   private toStartCaptureError(error: NodeJS.ErrnoException): Error {
     if (error.code === "ENOENT") {
-      return new Error("Audio capture failed: bundled recorder not found. Reinstall Vorn Voice or install SoX.");
+      return new Error("Audio capture failed: recorder not found. Reinstall Vorn Voice or add SoX to PATH.");
     }
 
     return new Error(`Audio capture failed: ${error.message}`);

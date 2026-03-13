@@ -51,7 +51,7 @@ export class AppCoordinator {
     private readonly speechStatsStore: SpeechStatsStore,
     private readonly overlay: OverlayWindow
   ) {
-    this.onboardingVerification = createOnboardingVerificationState(this.state.getSnapshot().settings.shortcut);
+    this.onboardingVerification = createOnboardingVerificationState(this.state.getSnapshot().settings);
   }
 
   start(): string | undefined {
@@ -129,10 +129,11 @@ export class AppCoordinator {
     if (
       !sameShortcut(previousSettings.shortcut, settings.shortcut)
       || previousSettings.activeModelId !== settings.activeModelId
+      || previousSettings.hotkeyBehavior !== settings.hotkeyBehavior
     ) {
       this.resetOnboardingVerification();
     } else {
-      this.syncOnboardingShortcut(settings.shortcut);
+      this.syncOnboardingVerification(settings);
     }
   }
 
@@ -143,6 +144,7 @@ export class AppCoordinator {
   armOnboardingVerification(): OnboardingVerificationState {
     this.updateOnboardingVerification({
       status: "armed",
+      hotkeyBehavior: this.state.getSnapshot().settings.hotkeyBehavior,
       shortcut: this.state.getSnapshot().settings.shortcut,
       result: undefined,
       errorMessage: undefined
@@ -152,7 +154,7 @@ export class AppCoordinator {
   }
 
   resetOnboardingVerification(): OnboardingVerificationState {
-    this.updateOnboardingVerification(createOnboardingVerificationState(this.state.getSnapshot().settings.shortcut));
+    this.updateOnboardingVerification(createOnboardingVerificationState(this.state.getSnapshot().settings));
     return this.getOnboardingVerificationState();
   }
 
@@ -207,8 +209,9 @@ export class AppCoordinator {
     this.recordingStartedAt = Date.now();
     this.isStartingCapture = true;
 
-    let allowed = this.permissionService.getMicrophonePermissionStatus() === "granted";
-    if (!allowed) {
+    const preflightStatus = this.permissionService.getMicrophonePreflightStatus();
+    let allowed = preflightStatus === "granted" || preflightStatus === "retryable";
+    if (!allowed && preflightStatus === "requestable") {
       allowed = await this.permissionService.requestMicrophonePermission();
     }
 
@@ -217,14 +220,15 @@ export class AppCoordinator {
       this.recordingStartedAt = undefined;
       this.stopPending = false;
       this.captureOrigin = null;
-      this.state.setMode("error", "Microphone permission is required");
+      const message = this.permissionService.getMicrophoneDeniedMessage();
+      this.state.setMode("error", message);
       if (origin === "onboarding") {
         this.updateOnboardingVerification({
           status: "failed",
           result: undefined,
-          errorMessage: "Microphone permission is required"
+          errorMessage: message
         });
-        throw new Error("Microphone permission is required");
+        throw new Error(message);
       }
       return;
     }
@@ -261,7 +265,7 @@ export class AppCoordinator {
       this.stopPending = false;
       this.recordingStartedAt = undefined;
       this.captureOrigin = null;
-      const message = toErrorMessage(error, "Audio capture failed");
+      const message = toCaptureStartMessage(error, preflightStatus, this.permissionService);
       this.state.setMode("error", message);
       this.overlay.show("message", message);
       this.overlay.hide(1200);
@@ -368,14 +372,19 @@ export class AppCoordinator {
           createdAt
         };
 
-        this.speechStatsStore.recordSample(sample);
+        try {
+          this.speechStatsStore.recordSample(sample);
+        } catch (error) {
+          const message = toErrorMessage(error, "Dictation worked, but speech stats could not be saved.");
+          this.state.setMode("idle", message);
+        }
         this.state.setSpeechSample(sample);
       }
 
       if (options.shouldAutoPaste && snapshot.settings.autoPaste) {
-        const accessibilityAllowed = this.permissionService.checkAccessibilityPermission(true);
-        if (!accessibilityAllowed) {
-          throw new Error("Accessibility permission is required for paste automation");
+        const autoPasteAccessAllowed = this.permissionService.checkAutoPasteAccess(true);
+        if (!autoPasteAccessAllowed) {
+          throw new Error(this.permissionService.getAutoPasteAccessDeniedMessage());
         }
 
         await this.pasteService.pasteText(transcript, snapshot.settings.restoreClipboard);
@@ -391,8 +400,8 @@ export class AppCoordinator {
         durationMs,
         modelId: snapshot.settings.activeModelId,
         autoPasteEnabled: snapshot.settings.autoPaste,
-        accessibilityReady: snapshot.settings.autoPaste
-          ? this.permissionService.checkAccessibilityPermission(false)
+        autoPasteAccessReady: snapshot.settings.autoPaste
+          ? this.permissionService.checkAutoPasteAccess(false)
           : true
       };
 
@@ -435,8 +444,11 @@ export class AppCoordinator {
     }
   }
 
-  private syncOnboardingShortcut(shortcut: AppSettings["shortcut"]): void {
-    this.updateOnboardingVerification({ shortcut });
+  private syncOnboardingVerification(settings: AppSettings): void {
+    this.updateOnboardingVerification({
+      shortcut: settings.shortcut,
+      hotkeyBehavior: settings.hotkeyBehavior
+    });
   }
 
   private updateOnboardingVerification(next: OnboardingVerificationState): void;
@@ -483,15 +495,40 @@ function stopOptionsForOrigin(origin: CaptureOrigin): StopCaptureOptions {
   };
 }
 
-function createOnboardingVerificationState(shortcut: AppSettings["shortcut"]): OnboardingVerificationState {
+function createOnboardingVerificationState(settings: AppSettings): OnboardingVerificationState {
   return {
     status: "idle",
-    shortcut
+    hotkeyBehavior: settings.hotkeyBehavior,
+    shortcut: settings.shortcut
   };
 }
 
 function isNonFatalMessage(message: string): boolean {
   return message === "No speech detected" || message.startsWith("Input too quiet");
+}
+
+function toCaptureStartMessage(
+  error: unknown,
+  preflightStatus: ReturnType<PermissionService["getMicrophonePreflightStatus"]>,
+  permissionService: PermissionService
+): string {
+  const message = toErrorMessage(error, "Audio capture failed");
+
+  if (preflightStatus !== "granted" && isMicrophoneAccessMessage(message)) {
+    return permissionService.getMicrophoneDeniedMessage();
+  }
+
+  return message;
+}
+
+function isMicrophoneAccessMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("permission denied")
+    || normalized.includes("access denied")
+    || normalized.includes("device unavailable")
+    || normalized.includes("microphone")
+  );
 }
 
 function toErrorMessage(error: unknown, fallback: string): string {

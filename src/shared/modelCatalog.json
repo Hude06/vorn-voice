@@ -1,8 +1,6 @@
 {
   "defaultModelId": "base.en",
-  "bundledModelIds": [
-    "base.en"
-  ],
+  "bundledModelIds": [],
   "models": [
     {
       "id": "tiny.en",
@@ -16,7 +14,7 @@
       "name": "Base (English)",
       "downloadUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
       "fileName": "ggml-base.en.bin",
-      "details": "Balanced speed and quality. Bundled by default."
+      "details": "Balanced speed and quality."
     },
     {
       "id": "small.en",

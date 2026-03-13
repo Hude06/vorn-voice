@@ -1,4 +1,5 @@
 import modelCatalog from "./modelCatalog.json";
+import { detectDesktopPlatform, type DesktopPlatform } from "./platform";
 
 export type AppMode = "idle" | "listening" | "transcribing" | "error";
 
@@ -116,6 +117,11 @@ export interface AppSnapshot {
 export interface SpeechRuntimeDiagnostics {
   whisperCliFound: boolean;
   whisperCliPath?: string;
+  soxFound: boolean;
+  soxPath?: string;
+  managementMode: "installable" | "bundled-only";
+  actionLabel: string;
+  recoveryMessage?: string;
   checkedPaths: string[];
   pathEnv: string;
 }
@@ -139,9 +145,18 @@ export interface ModelListItem {
   installed: boolean;
 }
 
+export type MicrophoneAccessStatus = "granted" | "denied" | "restricted" | "not-determined" | "unknown";
+
 export interface PermissionsSnapshot {
-  accessibility: boolean;
-  microphone: "granted" | "denied" | "restricted" | "not-determined" | "unknown";
+  platform: DesktopPlatform;
+  microphone: MicrophoneAccessStatus;
+  autoPasteAccessGranted: boolean;
+  autoPasteAccessRequired: boolean;
+  autoPasteAccessLabel: string;
+  autoPasteSupported: boolean;
+  autoPasteStatusMessage?: string;
+  canOpenMicrophoneSettings: boolean;
+  canOpenAutoPasteSettings: boolean;
   hotkeyReady: boolean;
   hotkeyMessage?: string;
 }
@@ -152,7 +167,7 @@ export interface UpdateStatus {
   canInstall: boolean;
 }
 
-export type PrivacyPane = "accessibility" | "microphone";
+export type SystemSettingsTarget = "auto-paste" | "microphone";
 
 export interface OnboardingState {
   completed: boolean;
@@ -161,6 +176,7 @@ export interface OnboardingState {
   dictationVerified?: boolean;
   dictationVerifiedAt?: number;
   verifiedModelId?: string;
+  verifiedHotkeyBehavior?: HotkeyBehavior;
   verifiedShortcut?: KeyboardShortcut;
 }
 
@@ -170,13 +186,14 @@ export interface OnboardingDictationResult {
   durationMs: number;
   modelId: string;
   autoPasteEnabled: boolean;
-  accessibilityReady: boolean;
+  autoPasteAccessReady: boolean;
 }
 
 export type OnboardingVerificationStatus = "idle" | "armed" | "listening" | "transcribing" | "passed" | "failed";
 
 export interface OnboardingVerificationState {
   status: OnboardingVerificationStatus;
+  hotkeyBehavior: HotkeyBehavior;
   shortcut: KeyboardShortcut;
   result?: OnboardingDictationResult;
   errorMessage?: string;
@@ -206,7 +223,7 @@ export interface VoicebarApi {
   startHotkeyCapture(): Promise<boolean>;
   cancelHotkeyCapture(): Promise<boolean>;
   requestMicrophonePermission(): Promise<boolean>;
-  openPrivacySettings(pane?: PrivacyPane): Promise<boolean>;
+  openSystemSettings(target?: SystemSettingsTarget): Promise<boolean>;
   checkPermissions(): Promise<PermissionsSnapshot>;
   getSpeechRuntimeDiagnostics(): Promise<SpeechRuntimeDiagnostics>;
   installSpeechRuntime(): Promise<SpeechRuntimeDiagnostics>;
@@ -226,21 +243,37 @@ export const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   version: ONBOARDING_VERSION
 };
 
-export const DEFAULT_SETTINGS: AppSettings = {
-  shortcut: {
+export function defaultShortcutForPlatform(platform: DesktopPlatform = detectDesktopPlatform()): KeyboardShortcut {
+  if (platform === "windows" || platform === "linux") {
+    return {
+      keyCode: 19,
+      modifiers: ["ctrl", "shift"],
+      display: "Ctrl + Shift + R"
+    };
+  }
+
+  return {
     keyCode: 19,
     modifiers: ["cmd", "shift"],
     display: "Shift + Command + R"
-  },
-  hotkeyBehavior: "hold",
-  activeModelId: DEFAULT_MODEL_ID,
-  lowLatencyCaptureEnabled: true,
-  preRollMs: 350,
-  postRollMs: 220,
-  autoPaste: false,
-  speechCleanupMode: "balanced",
-  restoreClipboard: true,
-  autoUpdateEnabled: true
-};
+  };
+}
+
+export function defaultSettingsForPlatform(platform: DesktopPlatform = detectDesktopPlatform()): AppSettings {
+  return {
+    shortcut: defaultShortcutForPlatform(platform),
+    hotkeyBehavior: "hold",
+    activeModelId: DEFAULT_MODEL_ID,
+    lowLatencyCaptureEnabled: true,
+    preRollMs: 350,
+    postRollMs: 220,
+    autoPaste: false,
+    speechCleanupMode: "balanced",
+    restoreClipboard: true,
+    autoUpdateEnabled: true
+  };
+}
+
+export const DEFAULT_SETTINGS: AppSettings = defaultSettingsForPlatform();
 
 export const MODEL_CATALOG: WhisperModel[] = MODEL_CONFIG.models.map((model) => ({ ...model }));

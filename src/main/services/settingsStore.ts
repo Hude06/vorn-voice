@@ -19,8 +19,15 @@ type PersistedSettings = {
   };
 };
 
+type PersistedReadResult = {
+  payload: PersistedSettings;
+  status: "ok" | "missing" | "blocked";
+  errorMessage?: string;
+};
+
 export class SettingsStore {
   private filePath = path.join(app.getPath("userData"), "settings.json");
+  private writeBlockedReason: string | null = null;
 
   load(): AppSettings {
     const persisted = this.readPersisted();
@@ -68,6 +75,7 @@ export class SettingsStore {
 
   save(settings: AppSettings): void {
     const persisted = this.readPersisted();
+    this.assertWritable();
     this.writePersisted({
       settings,
       onboarding: this.normalizeOnboarding(persisted.onboarding),
@@ -77,6 +85,7 @@ export class SettingsStore {
 
   updateOnboarding(partial?: Partial<OnboardingState>): OnboardingState {
     const persisted = this.readPersisted();
+    this.assertWritable();
     const next = this.normalizeOnboarding({
       ...this.normalizeOnboarding(persisted.onboarding),
       ...partial
@@ -102,6 +111,7 @@ export class SettingsStore {
     };
 
     const persisted = this.readPersisted();
+    this.assertWritable();
     this.writePersisted({
       settings: this.normalizeSettings(persisted.settings),
       onboarding: next,
@@ -113,6 +123,7 @@ export class SettingsStore {
 
   resetOnboarding(): OnboardingState {
     const persisted = this.readPersisted();
+    this.assertWritable();
     const reset = { ...DEFAULT_ONBOARDING_STATE };
     this.writePersisted({
       settings: this.normalizeSettings(persisted.settings),
@@ -123,25 +134,90 @@ export class SettingsStore {
   }
 
   private readPersisted(): PersistedSettings {
+    const result = this.readPersistedState();
+    this.writeBlockedReason = result.status === "blocked" ? result.errorMessage ?? "Settings storage is unavailable." : null;
+    return result.payload;
+  }
+
+  private readPersistedState(): PersistedReadResult {
     try {
-      const raw = fs.readFileSync(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
       return {
-        settings: parsed.settings ?? DEFAULT_SETTINGS,
-        onboarding: parsed.onboarding,
-        ui: parsed.ui
+        payload: this.readPersistedFile(this.filePath),
+        status: "ok"
       };
-    } catch {
-      return {
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        return {
+          payload: {
+            settings: DEFAULT_SETTINGS,
+            onboarding: DEFAULT_ONBOARDING_STATE
+          },
+          status: "blocked",
+          errorMessage: "Could not read existing settings safely. Fix or remove settings.json before saving changes."
+        };
+      }
+    }
+
+    for (const legacyPath of this.legacyFilePaths()) {
+      try {
+        const payload = this.readPersistedFile(legacyPath);
+        this.writePersisted(payload);
+        return {
+          payload,
+          status: "ok"
+        };
+      } catch (error) {
+        if (!isMissingFileError(error)) {
+          return {
+            payload: {
+              settings: DEFAULT_SETTINGS,
+              onboarding: DEFAULT_ONBOARDING_STATE
+            },
+            status: "blocked",
+            errorMessage: `Could not migrate existing settings from ${path.basename(path.dirname(legacyPath))}. Fix or remove the old settings file before saving changes.`
+          };
+        }
+      }
+    }
+
+    return {
+      payload: {
         settings: DEFAULT_SETTINGS,
         onboarding: DEFAULT_ONBOARDING_STATE
-      };
-    }
+      },
+      status: "missing"
+    };
+  }
+
+  private readPersistedFile(filePath: string): PersistedSettings {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
+    return {
+      settings: parsed.settings ?? DEFAULT_SETTINGS,
+      onboarding: parsed.onboarding,
+      ui: parsed.ui
+    };
   }
 
   private writePersisted(payload: PersistedSettings): void {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     fs.writeFileSync(this.filePath, JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private legacyFilePaths(): string[] {
+    const appDataPath = app.getPath("appData");
+    return [
+      path.join(appDataPath, "voicebar", "settings.json"),
+      path.join(appDataPath, "Voicebar", "settings.json")
+    ];
+  }
+
+  private assertWritable(): void {
+    if (!this.writeBlockedReason) {
+      return;
+    }
+
+    throw new Error(this.writeBlockedReason);
   }
 
   private normalizeSettings(settings: AppSettings): AppSettings {
@@ -191,6 +267,7 @@ export class SettingsStore {
         dictationVerified: false,
         dictationVerifiedAt: undefined,
         verifiedModelId: undefined,
+        verifiedHotkeyBehavior: undefined,
         verifiedShortcut: undefined,
         version: ONBOARDING_VERSION,
         completedAt: undefined
@@ -200,11 +277,21 @@ export class SettingsStore {
     if (!normalized.dictationVerified) {
       normalized.dictationVerifiedAt = undefined;
       normalized.verifiedModelId = undefined;
+      normalized.verifiedHotkeyBehavior = undefined;
       normalized.verifiedShortcut = undefined;
     }
 
     return normalized;
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && "code" in error
+    && (error as { code?: string }).code === "ENOENT"
+  );
 }
 
 function clampCaptureWindow(value: number, minimum: number, maximum: number, fallback: number): number {

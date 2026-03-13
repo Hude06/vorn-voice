@@ -1,4 +1,4 @@
-import { BrowserWindow } from "electron";
+import { BrowserWindow, type BrowserWindowConstructorOptions } from "electron";
 import path from "node:path";
 import { SettingsWindowMode } from "../../shared/types";
 
@@ -30,7 +30,7 @@ export class SettingsWindow {
     this.ready = false;
     this.revealOnLoad = true;
 
-    this.window = new BrowserWindow({
+    const windowOptions: BrowserWindowConstructorOptions = {
       width: 1280,
       height: 860,
       minWidth: 1100,
@@ -44,7 +44,13 @@ export class SettingsWindow {
         contextIsolation: true,
         nodeIntegration: false
       }
-    });
+    };
+
+    if (process.platform === "darwin") {
+      windowOptions.titleBarStyle = "hiddenInset";
+    }
+
+    this.window = new BrowserWindow(windowOptions);
 
     this.window.on("closed", () => {
       this.ready = false;

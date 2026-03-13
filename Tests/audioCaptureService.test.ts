@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import { AudioCaptureService } from "../src/main/services/audioCaptureService";
+import { terminateChildProcess } from "../src/main/services/processTermination";
 import type { AudioSignalStats } from "../src/shared/types";
 
 vi.mock("node:fs/promises", () => ({
   default: {
+    stat: vi.fn(async () => ({ size: 4_096 })),
     unlink: vi.fn(async () => undefined)
   }
+}));
+
+vi.mock("../src/main/services/processTermination", () => ({
+  terminateChildProcess: vi.fn(async () => true)
 }));
 
 function createStats(overrides: Partial<AudioSignalStats> = {}): AudioSignalStats {
@@ -21,6 +27,8 @@ function createStats(overrides: Partial<AudioSignalStats> = {}): AudioSignalStat
 describe("AudioCaptureService cleanup fallback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fs.stat).mockResolvedValue({ size: 4_096 } as Awaited<ReturnType<typeof fs.stat>>);
+    vi.mocked(terminateChildProcess).mockResolvedValue(true);
   });
 
   it("falls back to raw capture when balanced cleanup removes too much speech", async () => {
@@ -74,5 +82,43 @@ describe("AudioCaptureService cleanup fallback", () => {
 
     await expect(service.finalizeCapture("/tmp/raw.wav", "off", { captureBackend: "spawn" })).rejects.toThrow("No speech detected");
     expect(fs.unlink).toHaveBeenCalledWith("/tmp/raw.wav");
+  });
+
+  it("converts Windows spawn captures from raw PCM before finalizing", async () => {
+    const service = new AudioCaptureService("windows") as any;
+
+    service.process = { exitCode: null, killed: false };
+    service.outputPath = "/tmp/capture.raw";
+    service.resolveRecorderPath = vi.fn(async () => "/tmp/sox.exe");
+    service.convertRawPcmToWav = vi.fn(async () => "/tmp/capture.wav");
+    service.finalizeCapture = vi.fn(async () => "/tmp/capture.wav");
+
+    const finalizedPath = await service.stopSpawnCapture("balanced", 120);
+
+    expect(terminateChildProcess).toHaveBeenCalledTimes(1);
+    expect(service.convertRawPcmToWav).toHaveBeenCalledWith("/tmp/sox.exe", "/tmp/capture.raw");
+    expect(service.finalizeCapture).toHaveBeenCalledWith(
+      "/tmp/capture.wav",
+      "balanced",
+      expect.objectContaining({
+        captureBackend: "spawn",
+        keyupToCaptureStoppedMs: 120
+      })
+    );
+    expect(fs.unlink).toHaveBeenCalledWith("/tmp/capture.raw");
+    expect(finalizedPath).toBe("/tmp/capture.wav");
+  });
+
+  it("fails fast when the recorder does not stop in time", async () => {
+    const service = new AudioCaptureService("windows") as any;
+    vi.mocked(terminateChildProcess).mockResolvedValue(false);
+
+    service.process = { exitCode: null, killed: false };
+    service.outputPath = "/tmp/capture.raw";
+
+    await expect(service.stopSpawnCapture("balanced", 90)).rejects.toThrow(
+      "Audio capture failed: recorder did not stop in time"
+    );
+    expect(fs.unlink).toHaveBeenCalledWith("/tmp/capture.raw");
   });
 });

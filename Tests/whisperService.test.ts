@@ -10,10 +10,15 @@ describe("WhisperService long-audio handling", () => {
       checkedPaths: [],
       pathEnv: ""
     });
+    service.locateSoxPath = vi.fn().mockResolvedValue({
+      path: undefined,
+      checkedPaths: [],
+      pathEnv: ""
+    });
     service.tryInstallWithHomebrew = vi.fn();
 
     await expect(service.ensureRuntimeAvailable()).rejects.toThrow(
-      "whisper-cli not found. Install the Whisper runtime from Settings."
+      "Install whisper-cpp and SoX to use local transcription in development."
     );
     expect(service.tryInstallWithHomebrew).not.toHaveBeenCalled();
   });
@@ -88,5 +93,59 @@ describe("WhisperService long-audio handling", () => {
     service.transcribeSingle = vi.fn().mockRejectedValue(new Error("whisper-cli failed"));
 
     await expect(service.transcribe("/tmp/full.wav", "/tmp/model.bin")).rejects.toThrow("whisper-cli failed");
+  });
+
+  it("reports packaged Windows runtime as bundled-only when tools are missing", async () => {
+    const service = new WhisperService("windows", true) as any;
+
+    service.locateCLIPath = vi.fn().mockResolvedValue({
+      path: undefined,
+      checkedPaths: ["C:/app/bin/whisper-cli.exe"],
+      pathEnv: "C:/Windows/System32"
+    });
+    service.locateSoxPath = vi.fn().mockResolvedValue({
+      path: undefined,
+      checkedPaths: ["C:/app/bin/sox.exe"],
+      pathEnv: "C:/Windows/System32"
+    });
+
+    await expect(service.getDiagnostics()).resolves.toEqual(expect.objectContaining({
+      whisperCliFound: false,
+      soxFound: false,
+      managementMode: "bundled-only",
+      actionLabel: "Refresh runtime status",
+      recoveryMessage: "The bundled speech runtime is missing or incomplete. Reinstall Vorn Voice."
+    }));
+  });
+
+  it("installs both whisper-cpp and sox through Homebrew in macOS development mode", async () => {
+    const service = new WhisperService("macos", false) as any;
+    service.locateCLIPath = vi.fn()
+      .mockResolvedValueOnce({ path: undefined, checkedPaths: [], pathEnv: "" })
+      .mockResolvedValueOnce({ path: "/opt/homebrew/bin/whisper-cli", checkedPaths: [], pathEnv: "" });
+    service.locateSoxPath = vi.fn()
+      .mockResolvedValueOnce({ path: undefined, checkedPaths: [], pathEnv: "" })
+      .mockResolvedValueOnce({ path: "/opt/homebrew/bin/sox", checkedPaths: [], pathEnv: "" });
+    service.resolveBrewExecutable = vi.fn().mockResolvedValue("/opt/homebrew/bin/brew");
+    service.resolveFromInstalledBrewPrefix = vi.fn().mockResolvedValue(undefined);
+    service.runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 1, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+
+    const diagnostics = await service.installRuntime();
+
+    expect(service.runCommand).toHaveBeenCalledWith("/opt/homebrew/bin/brew", ["list", "--versions", "whisper-cpp"]);
+    expect(service.runCommand).toHaveBeenCalledWith("/opt/homebrew/bin/brew", ["install", "whisper-cpp"], { HOMEBREW_NO_AUTO_UPDATE: "1" }, 600_000);
+    expect(service.runCommand).toHaveBeenCalledWith("/opt/homebrew/bin/brew", ["list", "--versions", "sox"]);
+    expect(service.runCommand).toHaveBeenCalledWith("/opt/homebrew/bin/brew", ["install", "sox"], { HOMEBREW_NO_AUTO_UPDATE: "1" }, 600_000);
+    expect(diagnostics).toEqual(expect.objectContaining({
+      whisperCliFound: true,
+      soxFound: true,
+      managementMode: "installable",
+      actionLabel: "Reinstall runtime"
+    }));
   });
 });

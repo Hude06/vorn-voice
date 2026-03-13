@@ -4,7 +4,7 @@ import { averageWpm, createEmptySpeechStats, wordsThisWeek } from "../../shared/
 import {
   AppSettings,
   AppSnapshot,
-  BUNDLED_MODEL_IDS,
+  DEFAULT_SETTINGS,
   DEFAULT_MODEL_ID,
   KeyboardShortcut,
   ModelListItem,
@@ -16,8 +16,10 @@ import {
   SpeechStats,
   SettingsWindowMode,
   SpeechRuntimeDiagnostics,
+  SystemSettingsTarget,
   UpdateStatus
 } from "../../shared/types";
+import { detectDesktopPlatform, type DesktopPlatform } from "../../shared/platform";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardHeader } from "../components/ui/card";
@@ -30,7 +32,6 @@ type StatusTone = "neutral" | "success" | "warning" | "danger";
 type CriticalSettingsData = {
   snapshot: AppSnapshot;
   models: ModelListItem[];
-  speechStats: SpeechStats;
 };
 
 type SupportChecksData = {
@@ -74,8 +75,8 @@ const ONBOARDING_STEPS = [
   "Finish"
 ] as const;
 
-const CARD_BASE_CLASS = "relative overflow-hidden rounded-[28px] border-[rgba(249,115,22,0.14)] bg-[linear-gradient(180deg,rgba(19,19,19,0.98)_0%,rgba(16,16,16,0.98)_100%)] shadow-[0_22px_50px_rgba(0,0,0,0.38)]";
-const SUB_PANEL_CLASS = "rounded-2xl border border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(19,19,19,0.96)_0%,rgba(17,17,17,0.98)_100%)] p-4";
+const CARD_BASE_CLASS = "relative overflow-hidden rounded-[28px] border-[rgba(249,115,22,0.14)] bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.05),transparent_30%),linear-gradient(180deg,rgba(18,18,18,0.99)_0%,rgba(14,14,14,0.99)_34%,rgba(11,11,11,0.99)_100%)] shadow-[0_22px_50px_rgba(0,0,0,0.38)]";
+const SUB_PANEL_CLASS = "rounded-2xl border border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(21,21,21,0.96)_0%,rgba(18,18,18,0.98)_34%,rgba(16,16,16,0.99)_100%)] p-4";
 const TOKEN_BADGE_CLASS = "rounded-full border-[rgba(249,115,22,0.16)] bg-[#121212] text-[rgb(var(--muted-foreground))]";
 const FULLSCREEN_CONTENT_WIDTH_CLASS = "w-full max-w-[min(1540px,100vw)]";
 
@@ -105,6 +106,9 @@ export function SettingsApp(): ReactElement {
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [onboardingVerification, setOnboardingVerification] = useState<OnboardingVerificationState | null>(null);
   const draftRef = useRef<AppSettings | null>(null);
+  const savingRef = useRef(false);
+  const capturePendingRef = useRef(false);
+  const windowModeRef = useRef<SettingsWindowMode>(windowMode);
   const autosaveTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const skipAutosaveRef = useRef(true);
@@ -114,25 +118,30 @@ export function SettingsApp(): ReactElement {
   const requestSaveRef = useRef<(nextSettings: AppSettings, options?: { statusText?: string; toastText?: string }) => Promise<boolean>>(async () => false);
   const settingsContentRef = useRef<HTMLElement | null>(null);
 
-  const ready = Boolean(snapshot && draft && onboarding && onboardingVerification);
+  const ready = Boolean(snapshot && draft && onboarding);
   const installedModels = useMemo(() => models.filter((model) => model.installed), [models]);
   const activeModel = useMemo(
     () => models.find((model) => model.id === draft?.activeModelId),
     [draft?.activeModelId, models]
   );
   const activeModelInstalled = Boolean(activeModel?.installed);
-  const runtimeReady = Boolean(runtimeState?.whisperCliFound);
+  const runtimeReady = Boolean(runtimeState?.whisperCliFound && runtimeState?.soxFound);
   const microphoneGranted = permissionState?.microphone === "granted";
-  const accessibilityReady = draft?.autoPaste ? permissionState?.accessibility === true : true;
+  const autoPasteAccessReady = draft?.autoPaste
+    ? permissionState?.autoPasteAccessGranted === true && permissionState?.autoPasteSupported !== false
+    : true;
+  const autoPasteAccessLabel = permissionState?.autoPasteAccessLabel ?? "Auto-paste access";
+  const autoPasteStatusMessage = permissionState?.autoPasteStatusMessage;
   const hotkeyReady = permissionState?.hotkeyReady !== false;
   const dictationTestReady = Boolean(activeModelInstalled && runtimeReady && microphoneGranted && hotkeyReady);
-  const setupReady = Boolean(dictationTestReady && accessibilityReady);
-  const onboardingVerified = Boolean(
-    onboarding?.dictationVerified
-    && onboarding.verifiedModelId === draft?.activeModelId
-    && sameShortcut(onboarding.verifiedShortcut, draft?.shortcut)
-  );
+  const setupReady = Boolean(dictationTestReady && autoPasteAccessReady);
+  const persistedOnboardingVerified = isPersistedOnboardingVerified(onboarding, draft);
+  const liveOnboardingVerified = isLiveOnboardingVerified(onboardingVerification, draft);
+  const onboardingVerified = Boolean(persistedOnboardingVerified || liveOnboardingVerified);
   const completeReady = Boolean(setupReady && onboardingVerified);
+  const residentShellCopy = useMemo(() => getResidentShellCopy(), []);
+  const runtimeAction = runtimeActionLabel(runtimeState, runtimeReady);
+  const runtimeDetail = runtimeDetailText(runtimeState, runtimeReady);
 
   const clearAutosaveTimer = () => {
     if (autosaveTimerRef.current !== null) {
@@ -158,6 +167,18 @@ export function SettingsApp(): ReactElement {
     document.documentElement.style.colorScheme = "dark";
   }, []);
 
+  useEffect(() => {
+    savingRef.current = saving;
+  }, [saving]);
+
+  useEffect(() => {
+    capturePendingRef.current = capturePending;
+  }, [capturePending]);
+
+  useEffect(() => {
+    windowModeRef.current = windowMode;
+  }, [windowMode]);
+
   useLayoutEffect(() => {
     if (windowMode !== "settings") {
       return;
@@ -180,12 +201,9 @@ export function SettingsApp(): ReactElement {
 
     const bootstrap = async () => {
       try {
-        const [critical, onboardingState, verificationState, currentAppVersion, currentUpdateState] = await Promise.all([
+        const [critical, onboardingState] = await Promise.all([
           loadCriticalSettingsData(voicebar),
-          withTimeout(voicebar.getOnboardingState(), 5000, "Onboarding"),
-          withTimeout(voicebar.getOnboardingVerificationState(), 5000, "Onboarding verification"),
-          withTimeout(voicebar.getAppVersion(), 5000, "App version"),
-          withTimeout(voicebar.getUpdateState(), 5000, "Update status")
+          withTimeout(voicebar.getOnboardingState(), 5000, "Onboarding")
         ]);
 
         if (cancelled) {
@@ -193,7 +211,6 @@ export function SettingsApp(): ReactElement {
         }
 
         setSnapshot(critical.snapshot);
-        setSpeechStats(critical.speechStats);
         draftRef.current = critical.snapshot.settings;
         lastSpeechSampleIdRef.current = critical.snapshot.lastSpeechSample?.id ?? null;
         lastSavedSignatureRef.current = settingsSignature(critical.snapshot.settings);
@@ -201,27 +218,31 @@ export function SettingsApp(): ReactElement {
         setDraft(critical.snapshot.settings);
         setModels(critical.models);
         setOnboarding(onboardingState);
-        setOnboardingVerification(verificationState);
-        setAppVersion(currentAppVersion);
-        setUpdateState(currentUpdateState);
+        setOnboardingVerification(createOnboardingVerificationFallback(critical.snapshot.settings));
         setWindowMode(onboardingState.completed ? parseWindowMode() : "onboarding");
+        setStatus({ tone: "neutral", text: onboardingState.completed ? "Vorn Voice is ready." : "Finish setup to start dictating." });
 
-        const support = await loadSupportChecks(voicebar);
+        const optional = await loadOptionalSettingsData(voicebar, critical.snapshot.settings);
         if (cancelled) {
           return;
         }
 
-        if (support.permission) {
-          setPermissionState(support.permission);
+        setSpeechStats(optional.speechStats);
+        setOnboardingVerification((current) => mergeOnboardingVerificationBootstrapState(current, optional.onboardingVerification));
+        setAppVersion(optional.appVersion);
+        setUpdateState(optional.updateState);
+
+        if (optional.support.permission) {
+          setPermissionState(optional.support.permission);
         }
 
-        if (support.runtime) {
-          setRuntimeState(support.runtime);
+        if (optional.support.runtime) {
+          setRuntimeState(optional.support.runtime);
         }
 
         setStatus({
-          tone: support.errors.length > 0 ? "warning" : "neutral",
-          text: support.errors[0] ?? (onboardingState.completed ? "Vorn Voice is ready." : "Finish setup to start dictating.")
+          tone: optional.support.errors.length > 0 || optional.warnings.length > 0 ? "warning" : "neutral",
+          text: optional.support.errors[0] ?? optional.warnings[0] ?? (onboardingState.completed ? "Vorn Voice is ready." : "Finish setup to start dictating.")
         });
       } catch (error) {
         if (!cancelled) {
@@ -231,6 +252,15 @@ export function SettingsApp(): ReactElement {
     };
 
     void bootstrap();
+
+  }, [voicebar]);
+
+  useEffect(() => {
+    if (!voicebar) {
+      return;
+    }
+
+    let cancelled = false;
 
     const unsubscribeState = voicebar.onStateChanged((nextSnapshot) => {
       if (cancelled) {
@@ -243,10 +273,10 @@ export function SettingsApp(): ReactElement {
         lastSpeechSampleIdRef.current = nextSpeechSampleId;
         void voicebar.getSpeechStats().then(setSpeechStats).catch(() => undefined);
       }
-      draftRef.current = saving ? draftRef.current : nextSnapshot.settings;
+      draftRef.current = savingRef.current ? draftRef.current : nextSnapshot.settings;
       lastSavedSignatureRef.current = settingsSignature(nextSnapshot.settings);
       skipAutosaveRef.current = true;
-      setDraft((currentDraft) => (saving ? currentDraft : nextSnapshot.settings));
+      setDraft((currentDraft) => (savingRef.current ? currentDraft : nextSnapshot.settings));
     });
 
     const unsubscribeCaptured = voicebar.onHotkeyCaptured((shortcut) => {
@@ -255,7 +285,7 @@ export function SettingsApp(): ReactElement {
       }
 
       setCapturePending(false);
-      updateDraft((current) => ({ ...current, shortcut }), { immediateSave: windowMode === "settings" });
+      updateDraft((current) => ({ ...current, shortcut }), { immediateSave: windowModeRef.current === "settings" });
       setStatus({ tone: "success", text: `Hotkey updated to ${shortcut.display ?? "your new shortcut"}.` });
     });
 
@@ -292,11 +322,11 @@ export function SettingsApp(): ReactElement {
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current);
       }
-      if (capturePending) {
+      if (capturePendingRef.current) {
         void voicebar.cancelHotkeyCapture().catch(() => undefined);
       }
     };
-  }, [voicebar, saving, capturePending]);
+  }, [voicebar]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -347,7 +377,7 @@ export function SettingsApp(): ReactElement {
     }
 
     if (onboardingVerification.status === "passed" && onboardingVerification.result) {
-      if (onboardingVerified) {
+      if (persistedOnboardingVerified) {
         return;
       }
 
@@ -355,13 +385,14 @@ export function SettingsApp(): ReactElement {
         dictationVerified: true,
         dictationVerifiedAt: Date.now(),
         verifiedModelId: onboardingVerification.result.modelId,
+        verifiedHotkeyBehavior: onboardingVerification.hotkeyBehavior,
         verifiedShortcut: onboardingVerification.shortcut
       })
         .then(() => {
           setStatus({
             tone: "success",
-            text: onboardingVerification.result?.autoPasteEnabled && !onboardingVerification.result.accessibilityReady
-              ? "Test passed. Dictation works, but auto-paste still needs Accessibility access."
+            text: onboardingVerification.result?.autoPasteEnabled && !onboardingVerification.result.autoPasteAccessReady
+              ? `Test passed. Dictation works, but auto-paste still needs ${autoPasteAccessLabel}.`
               : "Test passed. Finish setup when you are ready."
           });
         })
@@ -378,12 +409,14 @@ export function SettingsApp(): ReactElement {
           dictationVerified: false,
           dictationVerifiedAt: undefined,
           verifiedModelId: undefined,
+          verifiedHotkeyBehavior: undefined,
           verifiedShortcut: undefined
         } : current);
         void updateOnboardingState({
           dictationVerified: false,
           dictationVerifiedAt: undefined,
           verifiedModelId: undefined,
+          verifiedHotkeyBehavior: undefined,
           verifiedShortcut: undefined
         }).catch(() => undefined);
       }
@@ -391,7 +424,7 @@ export function SettingsApp(): ReactElement {
         setStatus({ tone: "danger", text: onboardingVerification.errorMessage });
       }
     }
-  }, [onboardingVerification, onboarding, windowMode, onboardingVerified]);
+  }, [onboardingVerification, onboarding, windowMode, persistedOnboardingVerified, autoPasteAccessLabel]);
 
   useEffect(() => {
     if (windowMode !== "settings" || !draft) {
@@ -423,6 +456,8 @@ export function SettingsApp(): ReactElement {
   if (!ready || !draft || !onboarding) {
     return <Shell><EmptyState title="Loading Vorn Voice" text={status.text} /></Shell>;
   }
+
+  const currentOnboardingVerification = onboardingVerification ?? createOnboardingVerificationFallback(draft);
 
   const requestSave = async (
     nextSettings: AppSettings,
@@ -510,8 +545,10 @@ export function SettingsApp(): ReactElement {
       const diagnostics = await withTimeout(voicebar.installSpeechRuntime(), 120000, "Install runtime");
       setRuntimeState(diagnostics);
       setStatus({
-        tone: diagnostics.whisperCliFound ? "success" : "warning",
-        text: diagnostics.whisperCliFound ? "Speech runtime is ready." : "Runtime install finished, but Vorn still cannot find whisper-cli."
+        tone: diagnostics.whisperCliFound && diagnostics.soxFound ? "success" : "warning",
+        text: diagnostics.whisperCliFound && diagnostics.soxFound
+          ? "Speech runtime is ready."
+          : diagnostics.recoveryMessage ?? "Runtime status refreshed."
       });
     } catch (error) {
       setStatus({ tone: "danger", text: errorToMessage(error) });
@@ -526,7 +563,11 @@ export function SettingsApp(): ReactElement {
       await refreshSupportChecks(voicebar, setPermissionState, setRuntimeState, setStatus, false);
       setStatus({
         tone: granted ? "success" : "warning",
-        text: granted ? "Microphone access granted." : "Microphone access is still off. Enable it in System Settings if you want hands-free dictation."
+        text: granted
+          ? "Microphone access granted."
+          : (permissionState?.platform ?? detectDesktopPlatform()) === "windows"
+            ? "Microphone settings opened. After changing access, come back here and click Refresh checks."
+            : "Microphone access is still off. Open system settings, then refresh checks."
       });
     } catch (error) {
       setStatus({ tone: "danger", text: errorToMessage(error) });
@@ -569,10 +610,15 @@ export function SettingsApp(): ReactElement {
     }
   };
 
-  const openPrivacy = async (pane: "accessibility" | "microphone") => {
+  const openSystemSettings = async (target: SystemSettingsTarget) => {
     try {
-      await voicebar.openPrivacySettings(pane);
-      setStatus({ tone: "neutral", text: "System Settings opened. After changing access, come back here and click Refresh checks." });
+      const opened = await voicebar.openSystemSettings(target);
+      setStatus({
+        tone: opened ? "neutral" : "warning",
+        text: opened
+          ? "System settings opened. After changing access, come back here and click Refresh checks."
+          : "This system setting cannot be opened automatically on your current platform."
+      });
     } catch (error) {
       setStatus({ tone: "danger", text: errorToMessage(error) });
     }
@@ -593,7 +639,7 @@ export function SettingsApp(): ReactElement {
       }
 
       nextDraft = updated;
-      didChangeVerificationInputs = current.activeModelId !== updated.activeModelId || !sameShortcut(current.shortcut, updated.shortcut);
+      didChangeVerificationInputs = didOnboardingVerificationInputsChange(current, updated);
       draftRef.current = updated;
       return updated;
     });
@@ -608,6 +654,7 @@ export function SettingsApp(): ReactElement {
         dictationVerified: false,
         dictationVerifiedAt: undefined,
         verifiedModelId: undefined,
+        verifiedHotkeyBehavior: undefined,
         verifiedShortcut: undefined
       } satisfies Partial<OnboardingState>;
 
@@ -641,16 +688,22 @@ export function SettingsApp(): ReactElement {
       await voicebar.removeModel(modelId);
       const listedModels = await voicebar.listModels();
       setModels(listedModels);
+      const fallback = listedModels.find((model) => model.installed);
+      const followUp = resolveModelRemovalFollowUp({
+        removedModelId: modelId,
+        activeModelId: draft.activeModelId,
+        installedFallbackId: fallback?.id
+      });
 
-      if (draft.activeModelId === modelId) {
-        const fallback = listedModels.find((model) => model.installed);
-        if (fallback) {
-          const nextSettings = { ...draft, activeModelId: fallback.id };
-          await requestSave(nextSettings, { statusText: "Updated your default model.", toastText: "Changes saved" });
-        } else {
-          setStatus({ tone: "warning", text: "Model removed. Install another model before dictation can run." });
-          return;
-        }
+      if (followUp === "preserve-existing-status" && fallback) {
+        const nextSettings = { ...draft, activeModelId: fallback.id };
+        await requestSave(nextSettings, { statusText: "Updated your default model.", toastText: "Changes saved" });
+        return;
+      }
+
+      if (followUp === "warn-no-fallback") {
+        setStatus({ tone: "warning", text: "Model removed. Install another model before dictation can run." });
+        return;
       }
 
       setStatus({ tone: "success", text: "Model removed." });
@@ -681,9 +734,10 @@ export function SettingsApp(): ReactElement {
 
       const nextOnboarding = await voicebar.completeOnboarding({
         dictationVerified: true,
-        dictationVerifiedAt: onboarding.dictationVerifiedAt ?? Date.now(),
-        verifiedModelId: draft.activeModelId,
-        verifiedShortcut: draft.shortcut
+        dictationVerifiedAt: resolvedVerifiedAt(onboarding, onboardingVerification),
+        verifiedModelId: resolvedVerifiedModelId(onboardingVerification, draft),
+        verifiedHotkeyBehavior: resolvedVerifiedHotkeyBehavior(onboardingVerification, draft),
+        verifiedShortcut: resolvedVerifiedShortcut(onboardingVerification, draft)
       });
       setOnboarding(nextOnboarding);
       setWindowMode("settings");
@@ -714,9 +768,13 @@ export function SettingsApp(): ReactElement {
 
   return (
     <Shell>
-      <div className={cn("mx-auto flex min-h-screen w-full flex-col lg:h-screen lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:overflow-hidden", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
-        <aside className="flex min-h-0 shrink-0 flex-col border-b border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,#040404_0%,#050505_36%,#060606_100%)] shadow-[inset_-1px_0_0_rgba(249,115,22,0.06)] lg:h-screen lg:border-b-0 lg:border-r">
-          <div className="border-b border-[rgba(249,115,22,0.12)] px-5 py-5 lg:px-6 lg:py-6">
+      <div className={cn("mx-auto flex min-h-screen w-full flex-col lg:h-screen lg:px-3 lg:pb-3 lg:pt-8", FULLSCREEN_CONTENT_WIDTH_CLASS)}>
+        <div className="flex min-h-screen w-full flex-col lg:min-h-0 lg:flex-1 lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:overflow-hidden lg:rounded-[32px] lg:border lg:border-[rgba(249,115,22,0.12)] lg:bg-[linear-gradient(180deg,rgba(8,8,8,0.96)_0%,rgba(6,6,6,0.94)_100%)] lg:shadow-[0_20px_54px_rgba(0,0,0,0.32)]">
+        <aside className="relative flex min-h-0 shrink-0 flex-col overflow-hidden border-b border-[rgba(249,115,22,0.1)] bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.06),transparent_30%),linear-gradient(180deg,rgba(16,16,16,0.98)_0%,rgba(12,12,12,0.98)_36%,rgba(9,9,9,0.99)_100%)] shadow-[inset_-1px_0_0_rgba(249,115,22,0.06)] lg:h-full lg:border-b-0 lg:border-r">
+          <div aria-hidden="true" className="pointer-events-none absolute left-[-16%] top-0 hidden h-[16rem] w-[20rem] bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.1),transparent_72%)] opacity-90 lg:block" />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 hidden h-[72px] bg-[linear-gradient(180deg,rgba(249,115,22,0.05)_0%,rgba(249,115,22,0.015)_58%,transparent_100%)] lg:block" />
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 hidden h-px bg-[rgba(249,115,22,0.16)] lg:block" />
+          <div className="relative border-b border-[rgba(249,115,22,0.12)] px-5 pb-5 pt-5 lg:px-6 lg:pb-6 lg:pt-14">
             <span className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/82">
               <span className="h-2 w-2 rounded-full bg-[rgb(var(--accent))] shadow-[0_0_16px_rgba(249,115,22,0.55)]" />
               Vorn Voice
@@ -724,16 +782,16 @@ export function SettingsApp(): ReactElement {
             <h1 className="mt-3 text-[28px] leading-tight tracking-tight text-[rgb(var(--foreground))]">{windowMode === "onboarding" ? "Set up local dictation" : "Settings"}</h1>
             <p className="mt-2 m-0 max-w-xs text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">
               {windowMode === "onboarding"
-                ? "Work through the essentials once, then Vorn can stay quietly in your menu bar."
+                ? residentShellCopy.intro
                 : "Adjust dictation, models, and system behavior."}
             </p>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-5 lg:px-4 lg:py-6">
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-5 pt-4 lg:px-4 lg:pb-6 lg:pt-5">
             {windowMode === "settings" ? (
-              <div className="flex flex-1 flex-col">
-                <div className="flex min-h-full flex-1 flex-col rounded-[26px] border border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03)_0%,rgba(10,10,10,0.98)_18%,#080808_100%)] p-3 shadow-[0_16px_32px_rgba(0,0,0,0.22)]">
-                  <div className="px-2.5 pb-3">
+              <div className="flex min-h-full flex-1 flex-col">
+                <div className="flex flex-1 flex-col">
+                  <div className="px-3.5 pb-5">
                     <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/72">Navigation</span>
                     <p className="mt-2 text-xs leading-relaxed text-[rgb(var(--muted-foreground))]">Choose an area to adjust. Changes save automatically.</p>
                   </div>
@@ -747,14 +805,25 @@ export function SettingsApp(): ReactElement {
                       />
                     ))}
                   </nav>
+                  <div className="mt-auto px-3.5 pt-5">
+                    <div className="flex items-end justify-between gap-3 border-t border-[rgba(249,115,22,0.08)] pt-4">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/68">Auto-save</p>
+                        <p className="mt-1 max-w-[13rem] text-xs leading-relaxed text-[rgb(var(--muted-foreground))]">Settings apply immediately and stay local to this device.</p>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-[rgba(249,115,22,0.16)] bg-[rgba(249,115,22,0.06)] px-2.5 py-1 text-[11px] font-medium text-[rgb(var(--accent))]/88">
+                        v{appVersion}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             ) : (
-              <div className="flex flex-1 flex-col">
-                <div className="rounded-[26px] border border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03)_0%,rgba(10,10,10,0.98)_18%,#080808_100%)] p-3 shadow-[0_16px_32px_rgba(0,0,0,0.22)]">
-                  <div className="px-2.5 pb-3">
+              <div className="flex min-h-full flex-1 flex-col gap-6">
+                <div className="rounded-[28px] border border-[rgba(249,115,22,0.12)] bg-[linear-gradient(180deg,rgba(249,115,22,0.04)_0%,rgba(14,14,14,0.98)_22%,#080808_100%)] p-3 shadow-[0_18px_34px_rgba(0,0,0,0.24)]">
+                  <div className="px-3 pb-5">
                     <span className="text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/72">Setup</span>
-                    <p className="mt-2 text-xs leading-relaxed text-[rgb(var(--muted-foreground))]">Move through each step once to get local dictation ready on this Mac.</p>
+                    <p className="mt-2 text-xs leading-relaxed text-[rgb(var(--muted-foreground))]">Move through each step once to get local dictation ready on this device.</p>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     {ONBOARDING_STEPS.map((step, index) => (
@@ -768,29 +837,25 @@ export function SettingsApp(): ReactElement {
                     ))}
                   </div>
                 </div>
-              </div>
-            )}
-
-            {windowMode === "onboarding" ? (
-              <div className="mt-6 flex flex-col gap-2 lg:mt-auto">
-                <span className="px-3.5 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/72">System status</span>
-                <div className="rounded-2xl border border-[rgba(249,115,22,0.12)] bg-[linear-gradient(180deg,rgba(249,115,22,0.05)_0%,rgba(7,7,7,0.98)_22%,#060606_100%)] px-4 py-2 shadow-[0_16px_30px_rgba(0,0,0,0.28)]">
-                  <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
-                  <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
-                  <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
-                  <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
-                  <SidebarStat label="Paste" value={draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual"} tone={accessibilityReady ? "success" : "warning"} />
+                <div className="mt-auto flex flex-col gap-2">
+                  <span className="px-3.5 text-[11px] uppercase tracking-[0.18em] text-[rgb(var(--accent))]/72">System status</span>
+                  <div className="rounded-2xl border border-[rgba(249,115,22,0.12)] bg-[linear-gradient(180deg,rgba(249,115,22,0.04)_0%,rgba(10,10,10,0.98)_24%,#060606_100%)] px-4 py-2 shadow-[0_16px_30px_rgba(0,0,0,0.28)]">
+                    <SidebarStat label="Model" value={activeModelInstalled ? activeModel?.name ?? "Installed" : installedModels.length > 0 ? "Select one" : "Install one"} tone={activeModelInstalled ? "success" : "warning"} />
+                    <SidebarStat label="Installed" value={`${installedModels.length}`} tone={installedModels.length > 0 ? "success" : "warning"} />
+                    <SidebarStat label="Runtime" value={runtimeReady ? "Ready" : "Needs install"} tone={runtimeReady ? "success" : "warning"} />
+                    <SidebarStat label="Mic" value={microphoneLabel(permissionState)} tone={microphoneGranted ? "success" : "warning"} />
+                    <SidebarStat label="Paste" value={pasteStatusValue(permissionState, draft.autoPaste)} tone={autoPasteAccessReady ? "success" : "warning"} />
+                  </div>
                 </div>
               </div>
-            ) : null}
+            )}
           </div>
         </aside>
 
-        <main ref={settingsContentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.1),transparent_42%),radial-gradient(circle_at_top,rgba(249,115,22,0.05),transparent_32%),linear-gradient(180deg,#090909,#050505)] [scrollbar-gutter:stable]">
-          <div className="flex min-h-full flex-col gap-5 px-3 py-4 sm:px-5 sm:py-5 lg:px-7 lg:py-7 xl:px-9 xl:py-8 xl:pb-12">
+        <main ref={settingsContentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[radial-gradient(circle_at_-12%_-10%,rgba(249,115,22,0.05),transparent_34%),linear-gradient(180deg,#0a0a0a_0%,#070707_36%,#050505_100%)] [scrollbar-gutter:stable] lg:h-full">
+          <div className="flex min-h-full flex-col gap-5 px-3 py-4 sm:px-5 sm:py-5 lg:px-7 lg:pb-7 lg:pt-6 xl:px-9 xl:pb-12 xl:pt-7">
             {windowMode === "settings" && toast ? <SaveToast message={toast} /> : null}
-            <Card className="relative overflow-hidden rounded-[30px] border-[rgba(249,115,22,0.14)] bg-[linear-gradient(180deg,rgba(16,16,16,0.99)_0%,rgba(12,12,12,0.99)_100%)] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
-              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-[-8%] w-[34%] bg-[radial-gradient(circle_at_left_center,rgba(249,115,22,0.16),transparent_68%)]" />
+            <Card className="relative overflow-hidden rounded-[30px] border-[rgba(249,115,22,0.14)] bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.05),transparent_30%),linear-gradient(180deg,rgba(18,18,18,0.99)_0%,rgba(14,14,14,0.99)_34%,rgba(11,11,11,0.99)_100%)] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
               <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[rgba(249,115,22,0.16)]" />
               <CardHeader className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -802,7 +867,7 @@ export function SettingsApp(): ReactElement {
                   <p className="mt-1 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">{status.text}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
-                  <Badge className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium shadow-[0_0_0_1px_rgba(255,255,255,0.02)]", status.tone === "success" ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-200" : status.tone === "warning" ? "border-amber-500/40 bg-amber-950/40 text-amber-200" : status.tone === "danger" ? "border-red-500/40 bg-red-950/40 text-red-200" : "border-[rgba(249,115,22,0.26)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]" )} variant="outline">
+                  <Badge className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium shadow-[0_0_0_1px_rgba(255,255,255,0.02)]", status.tone === "success" ? "border-[rgba(249,115,22,0.3)] bg-[rgba(249,115,22,0.14)] text-[rgb(var(--foreground))]" : status.tone === "warning" ? "border-amber-500/40 bg-amber-950/40 text-amber-200" : status.tone === "danger" ? "border-red-500/40 bg-red-950/40 text-red-200" : "border-[rgba(249,115,22,0.26)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]" )} variant="outline">
                     {status.tone === "success" ? "Healthy" : status.tone === "warning" ? "Needs review" : status.tone === "danger" ? "Issue" : "Checking"}
                   </Badge>
                   <Button className="border-[rgba(249,115,22,0.26)] bg-[rgba(249,115,22,0.08)] hover:bg-[rgba(249,115,22,0.14)]" variant="outline" onClick={() => void refreshChecks()} type="button">Refresh checks</Button>
@@ -812,7 +877,9 @@ export function SettingsApp(): ReactElement {
 
             {windowMode === "onboarding" ? (
               <OnboardingView
-                accessibilityReady={accessibilityReady}
+                autoPasteAccessLabel={autoPasteAccessLabel}
+                autoPasteAccessReady={autoPasteAccessReady}
+                autoPasteStatusMessage={autoPasteStatusMessage}
                 activeModelId={draft.activeModelId}
                 activeModelInstalled={activeModelInstalled}
                 beginHotkeyCapture={beginHotkeyCapture}
@@ -830,13 +897,15 @@ export function SettingsApp(): ReactElement {
                 microphoneGranted={microphoneGranted}
                 models={models}
                 onboardingStep={onboardingStep}
-                onboardingVerification={onboardingVerification!}
+                onboardingVerification={currentOnboardingVerification}
                 onboardingVerified={onboardingVerified}
-                openPrivacy={openPrivacy}
+                openSystemSettings={openSystemSettings}
                 permissionState={permissionState}
                 removeModel={removeModel}
                 removingModelId={removingModelId}
                 requestMicrophone={requestMicrophone}
+                runtimeAction={runtimeAction}
+                runtimeDetail={runtimeDetail}
                 runtimeReady={runtimeReady}
                 saveCurrentDraft={saveCurrentDraft}
                 setDraft={updateDraft}
@@ -847,7 +916,9 @@ export function SettingsApp(): ReactElement {
             ) : (
               <SettingsView
                 activeTab={activeSettingsTab}
-                accessibilityReady={accessibilityReady}
+                autoPasteAccessLabel={autoPasteAccessLabel}
+                autoPasteAccessReady={autoPasteAccessReady}
+                autoPasteStatusMessage={autoPasteStatusMessage}
                 activeModel={activeModel}
                 activeModelInstalled={activeModelInstalled}
                 appVersion={appVersion}
@@ -866,12 +937,14 @@ export function SettingsApp(): ReactElement {
                 installingRuntime={installingRuntime}
                 microphoneGranted={microphoneGranted}
                 models={models}
-                openPrivacy={openPrivacy}
+                openSystemSettings={openSystemSettings}
                 permissionState={permissionState}
                 removeModel={removeModel}
                 removingModelId={removingModelId}
                 requestMicrophone={requestMicrophone}
                 resetOnboarding={resetOnboarding}
+                runtimeAction={runtimeAction}
+                runtimeDetail={runtimeDetail}
                 runtimeReady={runtimeReady}
                 runtimeState={runtimeState}
                 speechStats={speechStats}
@@ -883,12 +956,15 @@ export function SettingsApp(): ReactElement {
           </div>
         </main>
       </div>
+      </div>
     </Shell>
   );
 }
 
 type OnboardingViewProps = {
-  accessibilityReady: boolean;
+  autoPasteAccessLabel: string;
+  autoPasteAccessReady: boolean;
+  autoPasteStatusMessage?: string;
   activeModelId: string;
   activeModelInstalled: boolean;
   beginHotkeyCapture: () => Promise<void>;
@@ -909,11 +985,13 @@ type OnboardingViewProps = {
   onboardingStep: number;
   onboardingVerification: OnboardingVerificationState;
   onboardingVerified: boolean;
-  openPrivacy: (pane: "accessibility" | "microphone") => Promise<void>;
+  openSystemSettings: (target: SystemSettingsTarget) => Promise<void>;
   permissionState: PermissionsSnapshot | null;
   removeModel: (modelId: string) => Promise<void>;
   removingModelId: string | null;
   requestMicrophone: () => Promise<void>;
+  runtimeAction: string;
+  runtimeDetail: string;
   runtimeReady: boolean;
   saveCurrentDraft: (successText?: string) => Promise<boolean>;
   setDraft: (recipe: (current: AppSettings) => AppSettings) => void;
@@ -923,7 +1001,9 @@ type OnboardingViewProps = {
 
 function OnboardingView(props: OnboardingViewProps): ReactElement {
   const {
-    accessibilityReady,
+    autoPasteAccessLabel,
+    autoPasteAccessReady,
+    autoPasteStatusMessage,
     activeModelId,
     activeModelInstalled,
     beginHotkeyCapture,
@@ -944,17 +1024,20 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
     onboardingStep,
     onboardingVerification,
     onboardingVerified,
-    openPrivacy,
+    openSystemSettings,
     permissionState,
     removeModel,
     removingModelId,
     requestMicrophone,
+    runtimeAction,
+    runtimeDetail,
     runtimeReady,
     saveCurrentDraft,
     setDraft,
     setOnboardingStep,
     setupReady
   } = props;
+  const residentShellCopy = getResidentShellCopy();
 
   const nextStep = async () => {
     const saved = await saveCurrentDraft("Saved this step.");
@@ -973,7 +1056,7 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
     <div className="flex flex-col gap-3">
       {onboardingStep === 0 ? (
         <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-          <SectionHeading title="Choose your model" text="Pick one installed model. Base English is bundled by default, and Small English is available if you want more accuracy." />
+          <SectionHeading title="Choose your model" text="Pick one installed model. Base English is the default recommendation, and Small English is available if you want more accuracy." />
           <ModelPanel
             activeModelId={activeModelId}
             downloadModel={downloadModel}
@@ -988,11 +1071,11 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
 
       {onboardingStep === 1 ? (
         <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-          <SectionHeading title="Enable access" text="Vorn needs the speech runtime, microphone access, and optional Accessibility for auto-paste." />
+          <SectionHeading title="Enable access" text={`Vorn needs the speech runtime, microphone access, and optional ${autoPasteAccessLabel} for auto-paste.`} />
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <CheckCard
-              action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>}
-              detail="Runs locally on your Mac. No cloud setup required."
+              action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Working..." : runtimeAction}</Button>}
+              detail={runtimeDetail}
               ready={runtimeReady}
               title="Speech runtime"
             />
@@ -1003,10 +1086,14 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
               title="Microphone"
             />
             <CheckCard
-              action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined}
-              detail={draft.autoPaste ? "Needed only if you want Vorn to paste into other apps for you." : "You are using manual paste, so this can stay off."}
-              ready={accessibilityReady}
-              title="Accessibility"
+              action={draft.autoPaste && permissionState?.canOpenAutoPasteSettings
+                ? <Button variant="outline" onClick={() => void openSystemSettings("auto-paste")} type="button">{openAutoPasteSettingsLabel(permissionState)}</Button>
+                : undefined}
+              detail={draft.autoPaste
+                ? autoPasteDetail(permissionState)
+                : "You are using manual paste, so this can stay off."}
+              ready={autoPasteAccessReady}
+              title={autoPasteAccessLabel}
             />
             <CheckCard
               detail={permissionState?.hotkeyMessage ?? "Lets Vorn listen for your global shortcut and stop dictation when you release it."}
@@ -1014,8 +1101,8 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
               title="Hotkey monitoring"
             />
           </div>
-          {!microphoneGranted ? (
-            <p className="mt-3 text-sm text-[rgb(var(--muted-foreground))]">If macOS already asked once and you denied it, use <button className="bg-transparent p-0 text-[rgb(var(--accent))] underline decoration-[rgb(var(--accent))]/60 underline-offset-2" onClick={() => void openPrivacy("microphone")} type="button">Microphone Settings</button> to turn it back on.</p>
+          {!microphoneGranted && permissionState?.canOpenMicrophoneSettings ? (
+            <p className="mt-3 text-sm text-[rgb(var(--muted-foreground))]">If your device has microphone access turned off, use <button className="bg-transparent p-0 text-[rgb(var(--accent))] underline decoration-[rgb(var(--accent))]/60 underline-offset-2" onClick={() => void openSystemSettings("microphone")} type="button">Microphone Settings</button> to turn it back on.</p>
           ) : null}
         </Card>
       ) : null}
@@ -1055,12 +1142,12 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
 
       {onboardingStep === 3 ? (
         <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-          <SectionHeading title="Test and finish" text="Run one live dictation before you leave setup so you know the full local pipeline works on this Mac." />
+          <SectionHeading title="Test and finish" text="Run one live dictation before you leave setup so you know the full local pipeline works on this device." />
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <CheckCard detail={activeModelInstalled ? `Selected model: ${draft.activeModelId}` : "Choose and install a model."} ready={activeModelInstalled} title="Model ready" />
-            <CheckCard detail={runtimeReady ? "whisper-cli detected." : "Install the local speech runtime."} ready={runtimeReady} title="Runtime ready" />
+            <CheckCard detail={runtimeDetail} ready={runtimeReady} title="Runtime ready" />
             <CheckCard detail={microphoneGranted ? "Microphone access granted." : "Microphone access still missing."} ready={microphoneGranted} title="Microphone ready" />
-            <CheckCard detail={draft.autoPaste ? (accessibilityReady ? "Accessibility is ready for auto-paste." : "Accessibility is still needed for auto-paste.") : "Accessibility is optional because auto-paste is off."} ready={accessibilityReady} title="Paste behavior" />
+            <CheckCard detail={draft.autoPaste ? autoPasteDetail(permissionState) : `${autoPasteAccessLabel} is optional because auto-paste is off.`} ready={autoPasteAccessReady} title="Paste behavior" />
           </div>
           <div className={cn("mt-3 flex flex-col gap-3", SUB_PANEL_CLASS)}>
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1075,17 +1162,17 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
               </Badge>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge className={cn("rounded-full", onboardingVerified ? "bg-emerald-600/20 text-emerald-200" : "bg-amber-500/20 text-amber-100")} variant="outline">
+              <Badge className={cn("rounded-full", onboardingVerified ? "border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]" : "bg-amber-500/20 text-amber-100")} variant="outline">
                 {onboardingVerified ? "Verification passed" : "Verification required"}
               </Badge>
-              {draft.autoPaste && !accessibilityReady ? (
-                <Badge className="rounded-full bg-amber-500/20 text-amber-100" variant="outline">Auto-paste still needs Accessibility</Badge>
+              {draft.autoPaste && !autoPasteAccessReady ? (
+                <Badge className="rounded-full bg-amber-500/20 text-amber-100" variant="outline">{autoPasteStatusMessage ?? `Auto-paste still needs ${autoPasteAccessLabel}`}</Badge>
               ) : null}
             </div>
             {onboardingVerification.result ? (
-              <div className="rounded-2xl border border-emerald-600/30 bg-emerald-950/20 p-4">
+              <div className="rounded-2xl border border-[rgba(249,115,22,0.24)] bg-[linear-gradient(180deg,rgba(249,115,22,0.08)_0%,rgba(19,19,19,0.97)_26%,#131313_100%)] p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="rounded-full bg-emerald-600/20 text-emerald-200" variant="outline">{onboardingVerification.result.wordCount} words</Badge>
+                  <Badge className="rounded-full border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.12)] text-[rgb(var(--accent))]" variant="outline">{onboardingVerification.result.wordCount} words</Badge>
                   <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">{Math.max(1, Math.round(onboardingVerification.result.durationMs / 100) / 10)}s</Badge>
                   <Badge className="rounded-full bg-[#111111] text-[rgb(var(--muted-foreground))]" variant="outline">Model: {onboardingVerification.result.modelId}</Badge>
                 </div>
@@ -1102,7 +1189,7 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
           </div>
           <div className={cn("mt-3 flex flex-col gap-2", SUB_PANEL_CLASS)}>
             <strong>What happens next</strong>
-            <p className="text-sm text-[rgb(var(--muted-foreground))]">After this, Vorn can stay in your menu bar. If anything stops working, you can reopen this window from the menu bar icon.</p>
+            <p className="text-sm text-[rgb(var(--muted-foreground))]">{residentShellCopy.reopenHint}</p>
           </div>
         </Card>
       ) : null}
@@ -1125,7 +1212,9 @@ function OnboardingView(props: OnboardingViewProps): ReactElement {
 
 type SettingsViewProps = {
   activeTab: SettingsTabId;
-  accessibilityReady: boolean;
+  autoPasteAccessLabel: string;
+  autoPasteAccessReady: boolean;
+  autoPasteStatusMessage?: string;
   activeModel: ModelListItem | undefined;
   activeModelInstalled: boolean;
   appVersion: string;
@@ -1144,12 +1233,14 @@ type SettingsViewProps = {
   installingRuntime: boolean;
   microphoneGranted: boolean;
   models: ModelListItem[];
-  openPrivacy: (pane: "accessibility" | "microphone") => Promise<void>;
+  openSystemSettings: (target: SystemSettingsTarget) => Promise<void>;
   permissionState: PermissionsSnapshot | null;
   removeModel: (modelId: string) => Promise<void>;
   removingModelId: string | null;
   requestMicrophone: () => Promise<void>;
   resetOnboarding: () => Promise<void>;
+  runtimeAction: string;
+  runtimeDetail: string;
   runtimeReady: boolean;
   runtimeState: SpeechRuntimeDiagnostics | null;
   speechStats: SpeechStats;
@@ -1161,7 +1252,9 @@ type SettingsViewProps = {
 function SettingsView(props: SettingsViewProps): ReactElement {
   const {
     activeTab,
-    accessibilityReady,
+    autoPasteAccessLabel,
+    autoPasteAccessReady,
+    autoPasteStatusMessage,
     activeModel,
     activeModelInstalled,
     appVersion,
@@ -1180,12 +1273,14 @@ function SettingsView(props: SettingsViewProps): ReactElement {
     installingRuntime,
     microphoneGranted,
     models,
-    openPrivacy,
+    openSystemSettings,
     permissionState,
     removeModel,
     removingModelId,
     requestMicrophone,
     resetOnboarding,
+    runtimeAction,
+    runtimeDetail,
     runtimeReady,
     runtimeState,
     speechStats,
@@ -1197,13 +1292,16 @@ function SettingsView(props: SettingsViewProps): ReactElement {
   if (activeTab === "overview") {
     return (
       <OverviewView
-        accessibilityReady={accessibilityReady}
+        autoPasteAccessLabel={autoPasteAccessLabel}
+        autoPasteAccessReady={autoPasteAccessReady}
         activeModel={activeModel}
         activeModelInstalled={activeModelInstalled}
         draft={draft}
+        hotkeyReady={hotkeyReady}
         microphoneGranted={microphoneGranted}
         models={models}
         permissionState={permissionState}
+        runtimeDetail={runtimeDetail}
         runtimeReady={runtimeReady}
         speechStats={speechStats}
       />
@@ -1213,7 +1311,7 @@ function SettingsView(props: SettingsViewProps): ReactElement {
   if (activeTab === "models") {
     return (
       <SettingsSectionCard
-        text="Base English is bundled by default. Install Tiny or Small if you want a different speed or accuracy tradeoff."
+        text="Base English is the default recommendation. Install Tiny or Small if you want a different speed or accuracy tradeoff."
         title="Models"
       >
         <ModelPanel
@@ -1248,7 +1346,7 @@ function SettingsView(props: SettingsViewProps): ReactElement {
             <Badge className={cn(
               "rounded-full",
               updateState?.canInstall
-                ? "bg-emerald-600/20 text-emerald-200"
+                ? "border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]"
                 : updateState?.enabled
                   ? "bg-[#111111] text-[rgb(var(--muted-foreground))]"
                   : "bg-amber-500/20 text-amber-100"
@@ -1282,7 +1380,7 @@ function SettingsView(props: SettingsViewProps): ReactElement {
         ) : null}
         <DiagnosticsPanel diagnostics={snapshot.lastSpeechDiagnostics} fallbackRuntimePath={runtimeState?.whisperCliPath} selectedModelName={activeModel?.name ?? draft.activeModelId} />
         <div className="mt-4 flex flex-wrap justify-between gap-3">
-          <Button variant="outline" onClick={() => void openPrivacy("microphone")} type="button">Open Microphone Settings</Button>
+          <Button disabled={!permissionState?.canOpenMicrophoneSettings} variant="outline" onClick={() => void openSystemSettings("microphone")} type="button">Open Microphone Settings</Button>
           <Button className="bg-transparent text-[rgb(var(--muted-foreground))]" variant="outline" onClick={() => void resetOnboarding()} type="button">Run setup again</Button>
         </div>
       </SettingsSectionCard>
@@ -1339,12 +1437,12 @@ function SettingsView(props: SettingsViewProps): ReactElement {
         </section>
       </SettingsSectionCard>
 
-      <SettingsSectionCard title="Setup status" text="Keep an eye on the essentials here. If these checks are green, dictation should be ready to go.">
+      <SettingsSectionCard title="Setup status" text="Keep an eye on the essentials here. If these checks are in good shape, dictation should be ready to go.">
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <CheckCard detail={activeModelInstalled ? activeModel?.name ?? "Installed" : "Install a model, then select it."} ready={activeModelInstalled} title="Model" />
-          <CheckCard action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Installing..." : runtimeReady ? "Reinstall runtime" : "Install runtime"}</Button>} detail={runtimeReady ? "Speech runtime found." : "Needed for local transcription."} ready={runtimeReady} title="Speech runtime" />
+          <CheckCard action={<Button disabled={installingRuntime} variant="outline" onClick={() => void installRuntime()} type="button">{installingRuntime ? "Working..." : runtimeAction}</Button>} detail={runtimeDetail} ready={runtimeReady} title="Speech runtime" />
           <CheckCard action={<Button variant="outline" onClick={() => void requestMicrophone()} type="button">{microphoneGranted ? "Check again" : "Allow microphone"}</Button>} detail={microphoneGranted ? "Microphone access granted." : "Needed before dictation can start."} ready={microphoneGranted} title="Microphone" />
-          <CheckCard action={draft.autoPaste ? <Button variant="outline" onClick={() => void openPrivacy("accessibility")} type="button">Open Accessibility</Button> : undefined} detail={draft.autoPaste ? (accessibilityReady ? "Ready for auto-paste." : "Needed only if auto-paste is enabled.") : "Optional because auto-paste is off."} ready={accessibilityReady} title="Accessibility" />
+          <CheckCard action={draft.autoPaste && permissionState?.canOpenAutoPasteSettings ? <Button variant="outline" onClick={() => void openSystemSettings("auto-paste")} type="button">{openAutoPasteSettingsLabel(permissionState)}</Button> : undefined} detail={draft.autoPaste ? autoPasteDetail(permissionState) : `${autoPasteAccessLabel} is optional because auto-paste is off.`} ready={autoPasteAccessReady} title={autoPasteAccessLabel} />
           <CheckCard detail={permissionState?.hotkeyMessage ?? "Global shortcut monitoring is working."} ready={hotkeyReady} title="Hotkey monitoring" />
         </div>
       </SettingsSectionCard>
@@ -1353,34 +1451,46 @@ function SettingsView(props: SettingsViewProps): ReactElement {
 }
 
 type OverviewViewProps = {
-  accessibilityReady: boolean;
+  autoPasteAccessLabel: string;
+  autoPasteAccessReady: boolean;
   activeModel: ModelListItem | undefined;
   activeModelInstalled: boolean;
   draft: AppSettings;
+  hotkeyReady: boolean;
   microphoneGranted: boolean;
   models: ModelListItem[];
   permissionState: PermissionsSnapshot | null;
+  runtimeDetail: string;
   runtimeReady: boolean;
   speechStats: SpeechStats;
 };
 
 function OverviewView(props: OverviewViewProps): ReactElement {
   const {
-    accessibilityReady,
+    autoPasteAccessLabel,
+    autoPasteAccessReady,
     activeModel,
     activeModelInstalled,
     draft,
+    hotkeyReady,
     microphoneGranted,
     models,
     permissionState,
+    runtimeDetail,
     runtimeReady,
     speechStats
   } = props;
   const installedModelsCount = models.filter((model) => model.installed).length;
   const weeklyWords = wordsThisWeek(speechStats);
-  const pasteStatus = draft.autoPaste ? (permissionState?.accessibility ? "Ready" : "Needs access") : "Manual";
-  const pasteReady = draft.autoPaste ? accessibilityReady : true;
-  const overviewReady = Boolean(activeModelInstalled && runtimeReady && microphoneGranted && pasteReady);
+  const pasteStatus = pasteStatusValue(permissionState, draft.autoPaste);
+  const pasteReady = draft.autoPaste ? autoPasteAccessReady : true;
+  const overviewReady = isOverviewReady({
+    activeModelInstalled,
+    runtimeReady,
+    microphoneGranted,
+    pasteReady,
+    hotkeyReady
+  });
   const overviewTitle = overviewReady ? "Ready to dictate" : "A few things still need attention";
   const overviewText = overviewReady
     ? "Your local setup is in place. Shortcut capture, runtime detection, and your current model are aligned for everyday dictation."
@@ -1388,12 +1498,11 @@ function OverviewView(props: OverviewViewProps): ReactElement {
 
   return (
     <SettingsSectionCard
-      text="Quick read on the pieces that matter most for daily dictation on this Mac."
+      text="Quick read on the pieces that matter most for daily dictation on this device."
       title="Overview"
     >
       <div className="flex flex-col gap-4">
-        <article className="relative overflow-hidden rounded-[28px] border border-[rgba(249,115,22,0.16)] bg-[linear-gradient(180deg,rgba(249,115,22,0.06)_0%,rgba(18,18,18,0.98)_16%,#111111_100%)] p-6 shadow-[0_20px_36px_rgba(0,0,0,0.24)]">
-          <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-[-8%] w-[34%] bg-[radial-gradient(circle_at_right_center,rgba(249,115,22,0.14),transparent_72%)]" />
+        <article className="relative overflow-hidden rounded-[28px] border border-[rgba(249,115,22,0.16)] bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.05),transparent_30%),linear-gradient(180deg,rgba(18,18,18,0.99)_0%,rgba(14,14,14,0.99)_34%,rgba(11,11,11,0.99)_100%)] p-6 shadow-[0_20px_36px_rgba(0,0,0,0.24)]">
           <div className="relative">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={cn("rounded-full px-3 py-1", overviewReady ? "border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]" : "border-amber-500/35 bg-amber-950/35 text-amber-200")} variant="outline">
@@ -1427,13 +1536,13 @@ function OverviewView(props: OverviewViewProps): ReactElement {
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             className="min-h-[170px]"
-            detail={installedModelsCount > 0 ? "Available locally on this Mac." : "No models are installed yet."}
+            detail={installedModelsCount > 0 ? "Available locally on this device." : "No models are installed yet."}
             label="Installed models"
             value={`${installedModelsCount}`}
           />
           <MetricCard
             className="min-h-[170px]"
-            detail={runtimeReady ? "whisper-cli detected." : "Install the local speech runtime."}
+            detail={runtimeDetail}
             emphasize={runtimeReady}
             label="Runtime"
             value={runtimeReady ? "Ready" : "Needs install"}
@@ -1446,7 +1555,7 @@ function OverviewView(props: OverviewViewProps): ReactElement {
           />
           <MetricCard
             className="min-h-[170px]"
-            detail={draft.autoPaste ? (accessibilityReady ? "Auto-paste is available." : "Accessibility is still required.") : "Transcripts stay ready for manual paste."}
+            detail={draft.autoPaste ? autoPasteDetail(permissionState) : "Transcripts stay ready for manual paste."}
             label="Paste behavior"
             value={pasteStatus}
           />
@@ -1472,7 +1581,7 @@ function OverviewInsetStat({ detail, label, tone, value }: OverviewInsetStatProp
   };
 
   return (
-    <div className="rounded-2xl border border-[rgba(249,115,22,0.12)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03)_0%,rgba(18,18,18,0.98)_18%,#121212_100%)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+    <div className="rounded-2xl border border-[rgba(249,115,22,0.12)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03)_0%,rgba(18,18,18,0.98)_22%,#121212_100%)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
       <p className="text-xs uppercase tracking-[0.16em] text-[rgb(var(--muted-foreground))]">{label}</p>
       <strong className={cn("mt-2 block text-2xl tracking-tight", toneClass[tone])}>{value}</strong>
       <p className="mt-2 text-sm leading-relaxed text-[rgb(var(--muted-foreground))]">{detail}</p>
@@ -1489,7 +1598,7 @@ type SettingsSectionCardProps = {
 function SettingsSectionCard({ children, text, title }: SettingsSectionCardProps): ReactElement {
   return (
     <Card className={cn(CARD_BASE_CLASS, "p-5 md:p-6")}>
-      <div aria-hidden="true" className="pointer-events-none absolute -right-10 -top-6 h-32 w-32 rounded-full bg-[rgba(249,115,22,0.08)] blur-3xl" />
+      <div aria-hidden="true" className="pointer-events-none absolute -right-10 -top-6 h-32 w-32 rounded-full bg-[rgba(249,115,22,0.05)] blur-3xl" />
       <div className="relative">
         <SectionHeading text={text} title={title} />
         {children}
@@ -1509,7 +1618,7 @@ function StatsView({ snapshot, speechStats }: StatsViewProps): ReactElement {
 
   return (
     <div className="flex flex-col gap-3">
-      <SettingsSectionCard title="Stats" text="All speech stats stay local on this Mac. Lifetime totals update after each completed dictation.">
+      <SettingsSectionCard title="Stats" text="All speech stats stay local on this device. Lifetime totals update after each completed dictation.">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard detail="Across all finished dictation sessions" emphasize label="Total words" value={formatCount(speechStats.totalWords)} />
           <MetricCard label="Total sessions" value={formatCount(speechStats.sampleCount)} detail="Only completed speech captures count" />
@@ -1549,8 +1658,8 @@ function MetricCard({ className, detail, emphasize = false, label, value }: Metr
     <div className={cn(
       "relative flex h-full flex-col overflow-hidden rounded-2xl border p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
       emphasize
-        ? "border-[rgba(249,115,22,0.2)] bg-[linear-gradient(180deg,rgba(249,115,22,0.08)_0%,rgba(19,19,19,0.96)_18%,#131313_100%)]"
-        : "border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.04)_0%,rgba(19,19,19,0.97)_16%,#131313_100%)]",
+        ? "border-[rgba(249,115,22,0.2)] bg-[linear-gradient(180deg,rgba(249,115,22,0.07)_0%,rgba(19,19,19,0.96)_20%,#131313_100%)]"
+        : "border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.035)_0%,rgba(19,19,19,0.97)_18%,#131313_100%)]",
       className
     )}>
       <p className={cn("text-sm", emphasize ? "text-[rgb(var(--accent))]/84" : "text-[rgb(var(--muted-foreground))]")}>{label}</p>
@@ -1567,7 +1676,7 @@ type SaveToastProps = {
 function SaveToast({ message }: SaveToastProps): ReactElement {
   const toneClasses: Record<StatusTone, string> = {
     neutral: "border-[rgba(249,115,22,0.3)] bg-[rgba(249,115,22,0.12)] text-[rgb(var(--foreground))]",
-    success: "border-emerald-500/40 bg-emerald-950/50 text-emerald-100",
+    success: "border-[rgba(249,115,22,0.3)] bg-[rgba(249,115,22,0.14)] text-[rgb(var(--foreground))]",
     warning: "border-amber-500/40 bg-amber-950/50 text-amber-100",
     danger: "border-red-500/40 bg-red-950/50 text-red-100"
   };
@@ -1626,13 +1735,12 @@ function ModelPanel(props: ModelPanelProps): ReactElement {
       {models.map((model) => {
         const selected = model.installed && model.id === activeModelId;
         const busy = downloadModelId === model.id || removingModelId === model.id;
-        const bundled = BUNDLED_MODEL_IDS.includes(model.id);
         const defaultModel = model.id === DEFAULT_MODEL_ID;
         const stateLabel = selected ? "Selected" : model.installed ? "Installed" : "Install";
 
         return (
           <article className={cn(
-            "flex flex-col gap-3 rounded-2xl border bg-[linear-gradient(180deg,rgba(249,115,22,0.04)_0%,rgba(19,19,19,0.97)_18%,#131313_100%)] p-4 transition-all hover:border-[rgba(249,115,22,0.18)] hover:shadow-[0_12px_28px_rgba(0,0,0,0.22)]",
+            "flex flex-col gap-3 rounded-2xl border bg-[linear-gradient(180deg,rgba(249,115,22,0.035)_0%,rgba(19,19,19,0.97)_20%,#131313_100%)] p-4 transition-all hover:border-[rgba(249,115,22,0.18)] hover:shadow-[0_12px_28px_rgba(0,0,0,0.22)]",
             selected
               ? "border-[rgb(var(--accent))]/70 shadow-[inset_0_0_0_1px_rgba(249,115,22,0.38),0_18px_36px_rgba(0,0,0,0.28)]"
               : "border-[rgba(249,115,22,0.1)]"
@@ -1640,8 +1748,7 @@ function ModelPanel(props: ModelPanelProps): ReactElement {
             <div className="flex items-start justify-between gap-3">
               <strong className="text-base">{model.name}</strong>
               <div className="flex flex-wrap justify-end gap-2">
-                {defaultModel ? <Badge variant="default">Bundled default</Badge> : null}
-                {bundled && !defaultModel ? <Badge className="border-[rgba(249,115,22,0.18)] text-[rgb(var(--accent))]" variant="outline">Bundled</Badge> : null}
+                {defaultModel ? <Badge className="border-[rgba(249,115,22,0.2)] bg-[rgba(249,115,22,0.08)] text-[rgb(var(--accent))]" variant="outline">Default</Badge> : null}
                 <Badge className={cn(selected && "bg-[rgba(249,115,22,0.18)] text-[rgb(var(--foreground))]")} variant={selected || model.installed ? "secondary" : "outline"}>{stateLabel}</Badge>
               </div>
             </div>
@@ -1687,7 +1794,7 @@ function HotkeyPanel({ capturePending, hotkeyBehavior, onBegin, onCancel, shortc
           "inline-flex min-w-[170px] items-center justify-center rounded-full border px-4 py-2 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]",
           capturePending
             ? "border-[rgba(249,115,22,0.28)] bg-[rgba(249,115,22,0.12)] text-[rgb(var(--accent))]"
-            : "border-[rgba(249,115,22,0.16)] bg-[linear-gradient(180deg,rgba(249,115,22,0.04),#111111)]"
+            : "border-[rgba(249,115,22,0.16)] bg-[linear-gradient(180deg,rgba(249,115,22,0.035)_0%,#111111_100%)]"
         )}>{capturePending ? "Listening for keys..." : shortcut.display ?? "Not set"}</span>
         {capturePending ? (
           <Button className="border-[rgba(249,115,22,0.26)] hover:bg-[rgba(249,115,22,0.12)]" variant="outline" onClick={() => void onCancel()} type="button">Cancel</Button>
@@ -1712,7 +1819,7 @@ function CleanupModeSelector({ mode, onChange }: CleanupModeSelectorProps): Reac
             key={option}
             className={cn(
               "hover:border-[rgba(249,115,22,0.28)] hover:bg-[rgba(249,115,22,0.08)]",
-              safeMode === option && "border-[rgba(249,115,22,0.28)] bg-[linear-gradient(180deg,rgba(249,115,22,0.12),rgba(249,115,22,0.04))] text-[rgb(var(--foreground))]"
+              safeMode === option && "border-[rgba(249,115,22,0.28)] bg-[linear-gradient(180deg,rgba(249,115,22,0.1)_0%,rgba(249,115,22,0.035)_100%)] text-[rgb(var(--foreground))]"
             )}
             size="sm"
             variant="outline"
@@ -1740,8 +1847,8 @@ function ToggleRow({ checked, detail, label, onChange }: ToggleRowProps): ReactE
     <label className={cn(
       "flex items-start justify-between gap-4 rounded-2xl border px-4 py-3 transition-all hover:border-[rgba(249,115,22,0.28)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.18)]",
       checked
-        ? "border-[rgba(249,115,22,0.22)] bg-[linear-gradient(180deg,rgba(249,115,22,0.08),rgba(20,20,20,0.97)_20%,#131313)]"
-        : "border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03),rgba(20,20,20,0.97)_16%,#131313)]"
+        ? "border-[rgba(249,115,22,0.22)] bg-[linear-gradient(180deg,rgba(249,115,22,0.07)_0%,rgba(20,20,20,0.97)_22%,#131313_100%)]"
+        : "border-[rgba(249,115,22,0.1)] bg-[linear-gradient(180deg,rgba(249,115,22,0.03)_0%,rgba(20,20,20,0.97)_18%,#131313_100%)]"
     )}>
       <div className="flex flex-col gap-1">
         <strong className="text-sm">{label}</strong>
@@ -1762,12 +1869,12 @@ type CheckCardProps = {
 function CheckCard({ action, detail, ready, title }: CheckCardProps): ReactElement {
   return (
     <article className={cn(
-      "relative flex h-full flex-col gap-3 overflow-hidden rounded-2xl border bg-[linear-gradient(180deg,rgba(249,115,22,0.04)_0%,rgba(20,20,20,0.97)_18%,#131313_100%)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
-      ready ? "border-emerald-600/40" : "border-amber-600/40"
+      "relative flex h-full flex-col gap-3 overflow-hidden rounded-2xl border bg-[linear-gradient(180deg,rgba(249,115,22,0.035)_0%,rgba(20,20,20,0.97)_20%,#131313_100%)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
+      ready ? "border-[rgba(249,115,22,0.24)]" : "border-amber-600/40"
     )}>
       <div className="flex items-center justify-between gap-2">
         <strong className="text-sm">{title}</strong>
-        <Badge className={cn("rounded-full", ready ? "bg-emerald-600/20 text-emerald-200" : "bg-amber-500/20 text-amber-100")} variant="outline">{ready ? "Ready" : "Needs attention"}</Badge>
+        <Badge className={cn("rounded-full", ready ? "border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]" : "bg-amber-500/20 text-amber-100")} variant="outline">{ready ? "Ready" : "Needs attention"}</Badge>
       </div>
       <p className="text-sm text-[rgb(var(--muted-foreground))]">{detail}</p>
       {action ? <div className="mt-auto">{action}</div> : null}
@@ -1850,7 +1957,7 @@ type SidebarStatProps = {
 function SidebarStat({ label, tone, value }: SidebarStatProps): ReactElement {
   const toneClass: Record<StatusTone, string> = {
     neutral: "text-[rgb(var(--accent))]",
-    success: "text-emerald-400",
+    success: "text-[rgb(var(--accent))]",
     warning: "text-amber-300",
     danger: "text-red-400"
   };
@@ -1876,7 +1983,7 @@ function SidebarNavButton({ active, label, onClick }: SidebarNavButtonProps): Re
       className={cn(
         "group flex min-h-11 w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-[15px] font-medium transition-all lg:min-h-[52px]",
         active
-          ? "bg-[linear-gradient(90deg,rgba(249,115,22,0.12)_0%,rgba(249,115,22,0.03)_100%)] text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.18)]"
+          ? "bg-[linear-gradient(180deg,rgba(249,115,22,0.1)_0%,rgba(249,115,22,0.035)_100%)] text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.18)]"
           : "text-[rgb(var(--muted-foreground))] hover:bg-[rgba(249,115,22,0.05)] hover:text-[rgb(var(--foreground))]"
       )}
       onClick={onClick}
@@ -1906,7 +2013,7 @@ function SidebarStepButton({ active, index, label, onClick }: SidebarStepButtonP
       className={cn(
         "flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-sm transition-all lg:min-h-[52px]",
         active
-          ? "bg-[linear-gradient(90deg,rgba(249,115,22,0.12)_0%,rgba(249,115,22,0.03)_100%)] text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.18)]"
+          ? "bg-[linear-gradient(180deg,rgba(249,115,22,0.1)_0%,rgba(249,115,22,0.035)_100%)] text-[rgb(var(--foreground))] shadow-[inset_0_0_0_1px_rgba(249,115,22,0.18)]"
           : "text-[rgb(var(--muted-foreground))] hover:bg-[rgba(249,115,22,0.05)] hover:text-[rgb(var(--foreground))]"
       )}
       onClick={onClick}
@@ -1932,7 +2039,7 @@ type ShellProps = {
 };
 
 function Shell({ children }: ShellProps): ReactElement {
-  return <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.08),transparent_36%),radial-gradient(circle_at_top,rgba(249,115,22,0.04),transparent_26%),linear-gradient(180deg,#050505,#090909)] text-[rgb(var(--foreground))]">{children}</div>;
+  return <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(249,115,22,0.07),transparent_36%),linear-gradient(180deg,#0a0a0a_0%,#070707_34%,#050505_100%)] text-[rgb(var(--foreground))]">{children}</div>;
 }
 
 type EmptyStateProps = {
@@ -1950,13 +2057,55 @@ function EmptyState({ text, title }: EmptyStateProps): ReactElement {
 }
 
 async function loadCriticalSettingsData(voicebar: NonNullable<Window["voicebar"]>): Promise<CriticalSettingsData> {
-  const [snapshot, models, speechStats] = await Promise.all([
+  const [snapshot, models] = await Promise.all([
     withTimeout(voicebar.getState(), 5000, "App state"),
-    withTimeout(voicebar.listModels(), 5000, "Model list"),
-    withTimeout(voicebar.getSpeechStats(), 5000, "Speech stats")
+    withTimeout(voicebar.listModels(), 5000, "Model list")
   ]);
 
-  return { snapshot, models, speechStats };
+  return { snapshot, models };
+}
+
+export async function loadOptionalSettingsData(
+  voicebar: NonNullable<Window["voicebar"]>,
+  settings: AppSettings
+): Promise<{
+  onboardingVerification: OnboardingVerificationState;
+  appVersion: string;
+  updateState: UpdateStatus | null;
+  speechStats: SpeechStats;
+  support: SupportChecksData;
+  warnings: string[];
+}> {
+  const [verificationResult, appVersionResult, updateStateResult, speechStatsResult, support] = await Promise.all([
+    Promise.allSettled([withTimeout(voicebar.getOnboardingVerificationState(), 5000, "Onboarding verification")]),
+    Promise.allSettled([withTimeout(voicebar.getAppVersion(), 5000, "App version")]),
+    Promise.allSettled([withTimeout(voicebar.getUpdateState(), 5000, "Update status")]),
+    Promise.allSettled([withTimeout(voicebar.getSpeechStats(), 5000, "Speech stats")]),
+    loadSupportChecks(voicebar)
+  ]);
+
+  const warnings: string[] = [];
+  const [verification] = verificationResult;
+  const [appVersion] = appVersionResult;
+  const [updateState] = updateStateResult;
+  const [speechStats] = speechStatsResult;
+
+  return {
+    onboardingVerification: verification.status === "fulfilled"
+      ? verification.value
+      : collectOptionalWarning(warnings, createOnboardingVerificationFallback(settings), verification.reason, "Could not load onboarding verification state."),
+    appVersion: appVersion.status === "fulfilled"
+      ? appVersion.value
+      : "Unknown",
+    updateState: updateState.status === "fulfilled"
+      ? updateState.value
+      : null,
+    speechStats: speechStats.status === "fulfilled"
+      ? speechStats.value
+      : createEmptySpeechStats(),
+    support,
+    warnings
+  };
 }
 
 async function loadSupportChecks(voicebar: NonNullable<Window["voicebar"]>): Promise<SupportChecksData> {
@@ -2005,6 +2154,11 @@ async function refreshSupportChecks(
 function collectSupportError<T>(errors: string[], error: unknown, fallback: string): T | undefined {
   errors.push(errorToMessage(error, fallback));
   return undefined;
+}
+
+function collectOptionalWarning<T>(warnings: string[], fallbackValue: T, error: unknown, fallback: string): T {
+  warnings.push(errorToMessage(error, fallback));
+  return fallbackValue;
 }
 
 function settingsSignature(settings: AppSettings): string {
@@ -2057,7 +2211,7 @@ function verificationStatusLabel(status: OnboardingVerificationState["status"]):
 function verificationStatusClass(status: OnboardingVerificationState["status"]): string {
   switch (status) {
     case "passed":
-      return "bg-emerald-600/20 text-emerald-200";
+      return "border-[rgba(249,115,22,0.24)] bg-[rgba(249,115,22,0.1)] text-[rgb(var(--accent))]";
     case "failed":
       return "bg-red-500/20 text-red-200";
     case "listening":
@@ -2080,6 +2234,186 @@ function sameShortcut(left?: KeyboardShortcut, right?: KeyboardShortcut): boolea
   }
 
   return left.modifiers.every((modifier, index) => modifier === right.modifiers[index]);
+}
+
+export function isPersistedOnboardingVerified(onboarding: OnboardingState | null, draft?: AppSettings | null): boolean {
+  return Boolean(
+    onboarding?.dictationVerified
+    && onboarding.verifiedModelId === draft?.activeModelId
+    && onboarding.verifiedHotkeyBehavior === draft?.hotkeyBehavior
+    && sameShortcut(onboarding.verifiedShortcut, draft?.shortcut)
+  );
+}
+
+export function isLiveOnboardingVerified(verification: OnboardingVerificationState | null, draft?: AppSettings | null): boolean {
+  return Boolean(
+    verification?.status === "passed"
+    && verification.result?.modelId === draft?.activeModelId
+    && verification.hotkeyBehavior === draft?.hotkeyBehavior
+    && sameShortcut(verification.shortcut, draft?.shortcut)
+  );
+}
+
+export function resolvedVerifiedAt(onboarding: OnboardingState | null, verification: OnboardingVerificationState | null): number {
+  return onboarding?.dictationVerifiedAt ?? (verification?.status === "passed" ? Date.now() : Date.now());
+}
+
+export function resolvedVerifiedModelId(verification: OnboardingVerificationState | null, draft: AppSettings): string {
+  return verification?.status === "passed" ? verification.result?.modelId ?? draft.activeModelId : draft.activeModelId;
+}
+
+export function resolvedVerifiedHotkeyBehavior(verification: OnboardingVerificationState | null, draft: AppSettings): AppSettings["hotkeyBehavior"] {
+  return verification?.status === "passed" ? verification.hotkeyBehavior : draft.hotkeyBehavior;
+}
+
+export function resolvedVerifiedShortcut(verification: OnboardingVerificationState | null, draft: AppSettings): KeyboardShortcut {
+  return verification?.status === "passed" ? verification.shortcut : draft.shortcut;
+}
+
+export function didOnboardingVerificationInputsChange(current: AppSettings, updated: AppSettings): boolean {
+  return (
+    current.activeModelId !== updated.activeModelId
+    || current.hotkeyBehavior !== updated.hotkeyBehavior
+    || !sameShortcut(current.shortcut, updated.shortcut)
+  );
+}
+
+export function mergeOnboardingVerificationBootstrapState(
+  current: OnboardingVerificationState | null,
+  incoming: OnboardingVerificationState
+): OnboardingVerificationState {
+  if (!current) {
+    return incoming;
+  }
+
+  if (
+    (current.status === "armed" || current.status === "listening" || current.status === "transcribing")
+    && incoming.status === "idle"
+  ) {
+    return current;
+  }
+
+  if (current.status === "passed" && incoming.status !== "passed") {
+    return current;
+  }
+
+  return incoming;
+}
+
+export function getResidentShellCopy(platform: DesktopPlatform = detectDesktopPlatform()): {
+  intro: string;
+  reopenHint: string;
+} {
+  if (platform === "macos") {
+    return {
+      intro: "Work through the essentials once, then Vorn can stay quietly in your menu bar.",
+      reopenHint: "After this, Vorn can stay in your menu bar. If anything stops working, you can reopen this window from the menu bar icon."
+    };
+  }
+
+  return {
+    intro: "Work through the essentials once, then Vorn can stay quietly in your system tray.",
+    reopenHint: "After this, Vorn can stay in your system tray. If anything stops working, you can reopen this window from the tray icon."
+  };
+}
+
+export function isOverviewReady(options: {
+  activeModelInstalled: boolean;
+  runtimeReady: boolean;
+  microphoneGranted: boolean;
+  pasteReady: boolean;
+  hotkeyReady: boolean;
+}): boolean {
+  return Boolean(
+    options.activeModelInstalled
+    && options.runtimeReady
+    && options.microphoneGranted
+    && options.pasteReady
+    && options.hotkeyReady
+  );
+}
+
+export function resolveModelRemovalFollowUp(options: {
+  removedModelId: string;
+  activeModelId: string;
+  installedFallbackId?: string;
+}): "generic-success" | "warn-no-fallback" | "preserve-existing-status" {
+  if (options.removedModelId !== options.activeModelId) {
+    return "generic-success";
+  }
+
+  if (options.installedFallbackId) {
+    return "preserve-existing-status";
+  }
+
+  return "warn-no-fallback";
+}
+
+function createOnboardingVerificationFallback(settings?: Pick<AppSettings, "hotkeyBehavior" | "shortcut"> | null): OnboardingVerificationState {
+  return {
+    status: "idle",
+    hotkeyBehavior: settings?.hotkeyBehavior ?? DEFAULT_SETTINGS.hotkeyBehavior,
+    shortcut: settings?.shortcut ?? DEFAULT_SETTINGS.shortcut
+  };
+}
+
+function pasteStatusValue(permissionState: PermissionsSnapshot | null, autoPasteEnabled: boolean): string {
+  if (!autoPasteEnabled) {
+    return "Manual";
+  }
+
+  if (permissionState?.autoPasteSupported === false) {
+    return "Unavailable";
+  }
+
+  return permissionState?.autoPasteAccessGranted ? "Ready" : permissionState?.autoPasteAccessRequired ? "Needs access" : "Available";
+}
+
+function openAutoPasteSettingsLabel(permissionState: PermissionsSnapshot | null): string {
+  return permissionState?.autoPasteAccessLabel === "Accessibility" ? "Open Accessibility" : "Open Auto-paste Settings";
+}
+
+function autoPasteDetail(permissionState: PermissionsSnapshot | null): string {
+  if (permissionState?.autoPasteSupported === false) {
+    return permissionState.autoPasteStatusMessage ?? "Auto-paste is unavailable on this system.";
+  }
+
+  if (permissionState?.autoPasteAccessGranted) {
+    return "Ready for auto-paste.";
+  }
+
+  if (permissionState?.autoPasteAccessRequired) {
+    return "Needed only if auto-paste is enabled.";
+  }
+
+  return "Available on this platform.";
+}
+
+function runtimeActionLabel(
+  runtimeState: SpeechRuntimeDiagnostics | null,
+  runtimeReady: boolean,
+  platform: DesktopPlatform = detectDesktopPlatform()
+): string {
+  if (runtimeState?.actionLabel) {
+    return runtimeState.actionLabel;
+  }
+
+  if (platform === "windows" || platform === "linux") {
+    return "Refresh runtime status";
+  }
+
+  return runtimeReady ? "Reinstall runtime" : "Install runtime";
+}
+
+function runtimeDetailText(
+  runtimeState: SpeechRuntimeDiagnostics | null,
+  runtimeReady: boolean
+): string {
+  if (runtimeReady) {
+    return "Speech runtime found.";
+  }
+
+  return runtimeState?.recoveryMessage ?? "Needed for local transcription.";
 }
 
 function microphoneLabel(permissionState: PermissionsSnapshot | null): string {
@@ -2146,17 +2480,17 @@ function clampCaptureWindow(value: number, fallback: number): number {
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
+    const timeout = globalThis.setTimeout(() => {
       reject(new Error(`${label} took too long.`));
     }, timeoutMs);
 
     promise.then(
       (value) => {
-        window.clearTimeout(timeout);
+        globalThis.clearTimeout(timeout);
         resolve(value);
       },
       (error) => {
-        window.clearTimeout(timeout);
+        globalThis.clearTimeout(timeout);
         reject(error);
       }
     );

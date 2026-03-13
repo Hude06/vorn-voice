@@ -2,6 +2,7 @@ import { app, BrowserWindow, WebContents, ipcMain } from "electron";
 import { AppCoordinator } from "../coordinator";
 import { HotkeyService } from "../services/hotkeyService";
 import { ModelManager } from "../services/modelManager";
+import { PasteService } from "../services/pasteService";
 import { PermissionService } from "../services/permissionService";
 import { SettingsStore } from "../services/settingsStore";
 import { SpeechStatsStore } from "../services/speechStatsStore";
@@ -10,13 +11,14 @@ import { WhisperService } from "../services/whisperService";
 import { AppState } from "../state/appState";
 import { SettingsWindow } from "../windows/settingsWindow";
 import { IPC_CHANNELS } from "./channels";
-import { AppSettings, DEFAULT_SETTINGS, OnboardingState, PrivacyPane, SettingsWindowMode } from "../../shared/types";
+import { AppSettings, DEFAULT_SETTINGS, OnboardingState, SettingsWindowMode, SystemSettingsTarget } from "../../shared/types";
 
 type HandlerDeps = {
   appState: AppState;
   coordinator: AppCoordinator;
   hotkeyService: HotkeyService;
   modelManager: ModelManager;
+  pasteService: PasteService;
   permissionService: PermissionService;
   whisperService: WhisperService;
   updater: UpdateService;
@@ -110,22 +112,17 @@ export function registerIpcHandlers(deps: HandlerDeps): void {
     return true;
   });
 
-  ipcMain.handle(IPC_CHANNELS.permissionsOpenPrivacy, (_event, pane?: PrivacyPane) => {
-    deps.permissionService.openPrivacySettings(pane);
-    return true;
+  ipcMain.handle(IPC_CHANNELS.permissionsOpenPrivacy, (_event, target?: SystemSettingsTarget) => {
+    return deps.permissionService.openSystemSettings(target);
   });
 
   ipcMain.handle(IPC_CHANNELS.permissionsRequestMicrophone, () => deps.permissionService.requestMicrophonePermission());
 
   ipcMain.handle(IPC_CHANNELS.permissionsCheck, () => {
     const hotkeyMessage = deps.hotkeyService.probeHook();
-
-    return {
-      accessibility: deps.permissionService.checkAccessibilityPermission(false),
-      microphone: deps.permissionService.getMicrophonePermissionStatus(),
-      hotkeyReady: !hotkeyMessage,
-      hotkeyMessage
-    };
+    return deps.pasteService.getAvailability().then((autoPasteSupport) =>
+      deps.permissionService.getPermissionsSnapshot(autoPasteSupport, hotkeyMessage)
+    );
   });
 
   ipcMain.handle(IPC_CHANNELS.speechRuntimeDiagnostics, async () => deps.whisperService.getDiagnostics());

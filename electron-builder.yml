@@ -27,6 +27,17 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   gatekeeperAssess: false
-publish:
-  provider: generic
-  url: https://vorn.judemakes.dev/updates/mac/stable
+  publish:
+    - provider: generic
+      url: https://vorn.judemakes.dev/updates/mac/stable
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  publish:
+    - provider: generic
+      url: https://vorn.judemakes.dev/updates/windows/stable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: false

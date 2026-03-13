@@ -1,17 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { app } from "electron";
+import { detectDesktopPlatform, type DesktopPlatform } from "../../shared/platform";
 import { SpeechRuntimeDiagnostics, WhisperTranscriptionDiagnostics } from "../../shared/types";
-import { resolveBundledExecutable } from "./runtimeAssetPaths";
-
-type WhisperRuntimeLookup = {
-  path?: string;
-  checkedPaths: string[];
-  pathEnv: string;
-};
+import { terminateChildProcess } from "./processTermination";
+import { isRunnableFile, locateRuntimeExecutable, type RuntimeExecutableLookup } from "./runtimeResolver";
 
 type CommandResult = {
   code: number;
@@ -31,44 +27,43 @@ const CHUNK_DURATION_SECONDS = 75;
 const CHUNK_OVERLAP_SECONDS = 6;
 const MIN_REASONABLE_WORDS_FOR_LONG_AUDIO = 2;
 const OVERLAP_MATCH_WINDOW_WORDS = 24;
+const COMMAND_TERMINATION_TIMEOUT_MS = 2_500;
 
 export class WhisperService {
   private installAttempted = false;
   private installInFlight?: Promise<boolean>;
   private lastDiagnostics?: WhisperTranscriptionDiagnostics;
+  private readonly platform: DesktopPlatform;
+  private readonly packaged: boolean;
+
+  constructor(
+    platform: DesktopPlatform = detectDesktopPlatform(process.platform),
+    packaged = app?.isPackaged ?? false
+  ) {
+    this.platform = platform;
+    this.packaged = packaged;
+  }
 
   async installRuntime(): Promise<SpeechRuntimeDiagnostics> {
-    const existing = await this.locateCLIPath();
-    if (existing.path) {
-      return {
-        whisperCliFound: true,
-        whisperCliPath: existing.path,
-        checkedPaths: existing.checkedPaths,
-        pathEnv: existing.pathEnv
-      };
+    const existing = await this.getDiagnostics();
+    if (existing.whisperCliFound && existing.soxFound) {
+      return existing;
     }
 
-    const bundledPath = await resolveBundledExecutable("bin", "whisper-cli");
-    if (bundledPath) {
-      return {
-        whisperCliFound: true,
-        whisperCliPath: bundledPath,
-        checkedPaths: [bundledPath],
-        pathEnv: process.env.PATH ?? ""
-      };
+    if (this.platform === "macos" && !this.packaged) {
+      await this.tryInstallWithHomebrew(true);
     }
 
-    await this.tryInstallWithHomebrew(true);
     return this.getDiagnostics();
   }
 
   async ensureRuntimeAvailable(): Promise<string> {
-    const lookup = await this.locateCLIPath();
-    if (lookup.path) {
-      return lookup.path;
+    const diagnostics = await this.getDiagnostics();
+    if (diagnostics.whisperCliFound && diagnostics.whisperCliPath) {
+      return diagnostics.whisperCliPath;
     }
 
-    throw new Error("whisper-cli not found. Install the Whisper runtime from Settings.");
+    throw new Error(diagnostics.recoveryMessage ?? "whisper-cli not found. Install the speech runtime from Settings or add it to PATH.");
   }
 
   async transcribe(audioPath: string, modelPath: string, modelId = path.basename(modelPath)): Promise<string> {
@@ -195,7 +190,7 @@ export class WhisperService {
 
       child.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") {
-          reject(new Error("whisper-cli not found. Install whisper.cpp with Homebrew or add whisper-cli to PATH."));
+          reject(new Error("whisper-cli not found. Install the speech runtime from Settings or add it to PATH."));
           return;
         }
         reject(new Error(`Failed to launch whisper-cli: ${error.message}`));
@@ -283,23 +278,19 @@ export class WhisperService {
   }
 
   private async resolveSoxExecutable(): Promise<string | undefined> {
-    const fixedCandidates = [
-      await resolveBundledExecutable("bin", "sox"),
-      "/opt/homebrew/bin/sox",
-      "/usr/local/bin/sox"
-    ].filter((candidate): candidate is string => Boolean(candidate));
-    for (const candidate of fixedCandidates) {
-      if (await this.isExecutable(candidate)) {
-        return candidate;
-      }
-    }
+    const lookup = await this.locateSoxPath();
 
-    const shellResolvedPath = await this.resolveFromLoginShell(["sox"]);
-    if (!shellResolvedPath) {
-      return undefined;
-    }
+    return lookup.path;
+  }
 
-    return (await this.isExecutable(shellResolvedPath)) ? shellResolvedPath : undefined;
+  private async locateSoxPath(): Promise<RuntimeExecutableLookup> {
+    return locateRuntimeExecutable({
+      baseNames: ["sox"],
+      envKeys: ["VOX_SOX_PATH", "SOX_PATH"],
+      fixedCandidates: this.platform === "macos"
+        ? ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"]
+        : []
+    });
   }
 
   private modelLikelyEnglish(modelPath: string): boolean {
@@ -388,107 +379,51 @@ export class WhisperService {
   }
 
   async getDiagnostics(): Promise<SpeechRuntimeDiagnostics> {
-    const lookup = await this.locateCLIPath();
-    return {
-      whisperCliFound: Boolean(lookup.path),
-      whisperCliPath: lookup.path,
-      checkedPaths: lookup.checkedPaths,
-      pathEnv: lookup.pathEnv
-    };
+    const [runtimeLookup, soxLookup] = await Promise.all([this.locateCLIPath(), this.locateSoxPath()]);
+    return this.toDiagnostics(runtimeLookup, soxLookup);
   }
 
-  private async locateCLIPath(): Promise<WhisperRuntimeLookup> {
-    const pathEnv = process.env.PATH ?? "";
-    const checkedPaths: string[] = [];
-    const seenPaths = new Set<string>();
+  private async locateCLIPath(): Promise<RuntimeExecutableLookup> {
+    const lookup = await locateRuntimeExecutable({
+      baseNames: ["whisper-cli", "main"],
+      envKeys: ["VOX_RUNTIME_PATH", "WHISPER_CLI_PATH"],
+      fixedCandidates: this.platform === "macos"
+        ? [
+          "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
+          "/usr/local/opt/whisper-cpp/bin/whisper-cli",
+          "/opt/homebrew/bin/whisper-cli",
+          "/usr/local/bin/whisper-cli",
+          "/opt/homebrew/bin/main",
+          "/usr/local/bin/main"
+        ]
+        : []
+    });
 
-    const checkPath = async (candidate: string): Promise<boolean> => {
-      if (seenPaths.has(candidate)) {
-        return false;
-      }
-
-      seenPaths.add(candidate);
-      checkedPaths.push(candidate);
-      return this.isExecutable(candidate);
-    };
-
-    const executableNames = ["whisper-cli", "main"];
-    const fixedCandidates = [
-      await resolveBundledExecutable("bin", "whisper-cli"),
-      await resolveBundledExecutable("bin", "main"),
-      "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
-      "/usr/local/opt/whisper-cpp/bin/whisper-cli",
-      "/opt/homebrew/bin/whisper-cli",
-      "/usr/local/bin/whisper-cli",
-      "/opt/homebrew/bin/main",
-      "/usr/local/bin/main"
-    ].filter((candidate): candidate is string => Boolean(candidate));
-
-    for (const candidate of fixedCandidates) {
-      if (await checkPath(candidate)) {
-        return { path: candidate, checkedPaths, pathEnv };
-      }
+    if (lookup.path || this.platform !== "macos") {
+      return lookup;
     }
 
     const brewInstalledPath = await this.resolveFromInstalledBrewPrefix();
-    if (brewInstalledPath && (await checkPath(brewInstalledPath))) {
-      return { path: brewInstalledPath, checkedPaths, pathEnv };
+    if (!brewInstalledPath) {
+      return lookup;
     }
 
-    const pathDirectories = pathEnv.split(path.delimiter).filter((segment) => segment.length > 0);
-    for (const directory of pathDirectories) {
-      for (const executableName of executableNames) {
-        const candidate = path.join(directory, executableName);
-        if (await checkPath(candidate)) {
-          return { path: candidate, checkedPaths, pathEnv };
-        }
-      }
+    const checkedPaths = lookup.checkedPaths.includes(brewInstalledPath)
+      ? lookup.checkedPaths
+      : [...lookup.checkedPaths, brewInstalledPath];
+
+    if (!(await isRunnableFile(brewInstalledPath))) {
+      return {
+        checkedPaths,
+        pathEnv: lookup.pathEnv
+      };
     }
 
-    const shellResolvedPath = await this.resolveFromLoginShell(executableNames);
-    if (shellResolvedPath && (await checkPath(shellResolvedPath))) {
-      return { path: shellResolvedPath, checkedPaths, pathEnv };
-    }
-
-    return { checkedPaths, pathEnv };
-  }
-
-  private async resolveFromLoginShell(executables: string[]): Promise<string | undefined> {
-    const shell = process.env.SHELL || "/bin/zsh";
-    const command = executables.map((name) => `command -v ${name}`).join(" || ");
-
-    return new Promise<string | undefined>((resolve) => {
-      const child = spawn(shell, ["-lic", command], { stdio: ["ignore", "pipe", "ignore"] });
-
-      let output = "";
-      child.stdout.on("data", (chunk: Buffer) => {
-        output += chunk.toString("utf8");
-      });
-
-      child.on("error", () => resolve(undefined));
-      child.on("exit", (code) => {
-        if (code !== 0) {
-          resolve(undefined);
-          return;
-        }
-
-        const firstLine = output
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .find((line) => line.length > 0);
-
-        resolve(firstLine);
-      });
-    });
-  }
-
-  private async isExecutable(candidate: string): Promise<boolean> {
-    try {
-      await fs.access(candidate, fsConstants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
+    return {
+      path: brewInstalledPath,
+      checkedPaths,
+      pathEnv: lookup.pathEnv
+    };
   }
 
   private async resolveFromInstalledBrewPrefix(): Promise<string | undefined> {
@@ -513,7 +448,7 @@ export class WhisperService {
 
     const candidates = [path.join(prefix, "bin", "whisper-cli"), path.join(prefix, "bin", "main")];
     for (const candidate of candidates) {
-      if (await this.isExecutable(candidate)) {
+      if (await isRunnableFile(candidate)) {
         return candidate;
       }
     }
@@ -522,6 +457,10 @@ export class WhisperService {
   }
 
   private async tryInstallWithHomebrew(force = false): Promise<string | undefined> {
+    if (this.platform !== "macos") {
+      return undefined;
+    }
+
     if (this.installInFlight) {
       await this.installInFlight;
       return this.resolveFromInstalledBrewPrefix();
@@ -551,37 +490,18 @@ export class WhisperService {
   }
 
   private async installWithHomebrew(brewPath: string): Promise<boolean> {
-    const listResult = await this.runCommand(brewPath, ["list", "--versions", "whisper-cpp"]);
-    if (listResult.code === 0) {
-      return true;
-    }
-
-    const installResult = await this.runCommand(
-      brewPath,
-      ["install", "whisper-cpp"],
-      {
-        HOMEBREW_NO_AUTO_UPDATE: "1"
-      },
-      10 * 60 * 1000
-    );
-
-    return installResult.code === 0;
+    const whisperInstalled = await this.ensureFormulaInstalled(brewPath, "whisper-cpp");
+    const soxInstalled = await this.ensureFormulaInstalled(brewPath, "sox");
+    return whisperInstalled && soxInstalled;
   }
 
   private async resolveBrewExecutable(): Promise<string | undefined> {
-    const candidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
-    for (const candidate of candidates) {
-      if (await this.isExecutable(candidate)) {
-        return candidate;
-      }
-    }
+    const lookup = await locateRuntimeExecutable({
+      baseNames: ["brew"],
+      fixedCandidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+    });
 
-    const shellResolvedPath = await this.resolveFromLoginShell(["brew"]);
-    if (!shellResolvedPath) {
-      return undefined;
-    }
-
-    return (await this.isExecutable(shellResolvedPath)) ? shellResolvedPath : undefined;
+    return lookup.path;
   }
 
   private async runCommand(
@@ -601,6 +521,17 @@ export class WhisperService {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
+
+      const finish = (result: CommandResult): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
@@ -610,18 +541,90 @@ export class WhisperService {
       });
 
       const timer = setTimeout(() => {
-        child.kill("SIGTERM");
+        void terminateChildProcess(child, {
+          platform: this.platform,
+          gracefulSignal: "SIGTERM",
+          totalTimeoutMs: COMMAND_TERMINATION_TIMEOUT_MS
+        }).then(() => {
+          finish({ code: -1, stdout, stderr: stderr || "Command timed out" });
+        });
       }, timeoutMs);
 
       child.on("error", (error) => {
-        clearTimeout(timer);
-        resolve({ code: -1, stdout, stderr: stderr || error.message });
+        finish({ code: -1, stdout, stderr: stderr || error.message });
       });
 
       child.on("exit", (code) => {
-        clearTimeout(timer);
-        resolve({ code: code ?? -1, stdout, stderr });
+        finish({ code: code ?? -1, stdout, stderr });
       });
     });
+  }
+
+  private async ensureFormulaInstalled(brewPath: string, formula: string): Promise<boolean> {
+    const listResult = await this.runCommand(brewPath, ["list", "--versions", formula]);
+    if (listResult.code === 0) {
+      return true;
+    }
+
+    const installResult = await this.runCommand(
+      brewPath,
+      ["install", formula],
+      {
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      },
+      10 * 60 * 1000
+    );
+
+    return installResult.code === 0;
+  }
+
+  private toDiagnostics(runtimeLookup: RuntimeExecutableLookup, soxLookup: RuntimeExecutableLookup): SpeechRuntimeDiagnostics {
+    const whisperCliFound = Boolean(runtimeLookup.path);
+    const soxFound = Boolean(soxLookup.path);
+    const managementMode = !this.packaged && this.platform === "macos" ? "installable" : "bundled-only";
+
+    return {
+      whisperCliFound,
+      whisperCliPath: runtimeLookup.path,
+      soxFound,
+      soxPath: soxLookup.path,
+      managementMode,
+      actionLabel: this.runtimeActionLabel(managementMode, whisperCliFound, soxFound),
+      recoveryMessage: this.runtimeRecoveryMessage(managementMode, whisperCliFound, soxFound),
+      checkedPaths: Array.from(new Set([...runtimeLookup.checkedPaths, ...soxLookup.checkedPaths])),
+      pathEnv: runtimeLookup.pathEnv || soxLookup.pathEnv
+    };
+  }
+
+  private runtimeActionLabel(
+    managementMode: SpeechRuntimeDiagnostics["managementMode"],
+    whisperCliFound: boolean,
+    soxFound: boolean
+  ): string {
+    if (managementMode === "installable") {
+      return whisperCliFound && soxFound ? "Reinstall runtime" : "Install runtime";
+    }
+
+    return "Refresh runtime status";
+  }
+
+  private runtimeRecoveryMessage(
+    managementMode: SpeechRuntimeDiagnostics["managementMode"],
+    whisperCliFound: boolean,
+    soxFound: boolean
+  ): string | undefined {
+    if (whisperCliFound && soxFound) {
+      return undefined;
+    }
+
+    if (managementMode === "installable") {
+      return "Install whisper-cpp and SoX to use local transcription in development.";
+    }
+
+    if (this.packaged) {
+      return "The bundled speech runtime is missing or incomplete. Reinstall Vorn Voice.";
+    }
+
+    return "Set VOX runtime paths or install whisper-cli and SoX to use local transcription in development.";
   }
 }

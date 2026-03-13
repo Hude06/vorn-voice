@@ -18,17 +18,7 @@ export class ModelManager {
       return false;
     }
 
-    const target = this.localPath(model);
-    if (!fs.existsSync(target)) {
-      return false;
-    }
-
-    try {
-      const stat = await fsp.stat(target);
-      return stat.size >= MIN_MODEL_BYTES;
-    } catch {
-      return false;
-    }
+    return Boolean(await this.findExistingModelPath(model));
   }
 
   async installedModels(): Promise<WhisperModel[]> {
@@ -46,7 +36,7 @@ export class ModelManager {
     const temporaryFile = `${destination}.download`;
 
     await fsp.mkdir(path.dirname(destination), { recursive: true });
-    if (await this.isInstalled(model.id)) {
+    if (await this.findExistingModelPath(model)) {
       throw new Error("Model already installed");
     }
 
@@ -86,11 +76,12 @@ export class ModelManager {
     }
 
     const target = this.localPath(model);
-    if (!fs.existsSync(target)) {
+    const existingPath = await this.findExistingModelPath(model);
+    if (!existingPath) {
       throw new Error("Model is not installed");
     }
 
-    await fsp.rm(target);
+    await fsp.rm(existingPath);
   }
 
   async resolveModelPath(modelId: string): Promise<string> {
@@ -100,7 +91,14 @@ export class ModelManager {
     }
 
     const target = this.localPath(model);
-    if (await this.isInstalled(modelId)) {
+    const existingPath = await this.findExistingModelPath(model);
+    if (existingPath === target) {
+      return target;
+    }
+
+    if (existingPath) {
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      await fsp.copyFile(existingPath, target);
       return target;
     }
 
@@ -120,7 +118,15 @@ export class ModelManager {
       return false;
     }
 
-    if (await this.isInstalled(modelId)) {
+    const target = this.localPath(model);
+    const existingPath = await this.findExistingModelPath(model);
+    if (existingPath === target) {
+      return true;
+    }
+
+    if (existingPath) {
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      await fsp.copyFile(existingPath, target);
       return true;
     }
 
@@ -129,7 +135,6 @@ export class ModelManager {
       return false;
     }
 
-    const target = this.localPath(model);
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await fsp.copyFile(bundledSource, target);
     return true;
@@ -195,6 +200,33 @@ export class ModelManager {
 
   private async resolveBundledModelPath(model: WhisperModel): Promise<string | undefined> {
     return resolveBundledFile(MIN_MODEL_BYTES, "models", model.fileName);
+  }
+
+  private async findExistingModelPath(model: WhisperModel): Promise<string | undefined> {
+    for (const candidate of [this.localPath(model), ...this.legacyPaths(model)]) {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+
+      try {
+        const stat = await fsp.stat(candidate);
+        if (stat.size >= MIN_MODEL_BYTES) {
+          return candidate;
+        }
+      } catch {
+        // ignore invalid candidate paths
+      }
+    }
+
+    return undefined;
+  }
+
+  private legacyPaths(model: WhisperModel): string[] {
+    const appDataPath = app.getPath("appData");
+    return [
+      path.join(appDataPath, "voicebar", "Models", model.fileName),
+      path.join(appDataPath, "Voicebar", "Models", model.fileName)
+    ];
   }
 
   private localPath(model: WhisperModel): string {

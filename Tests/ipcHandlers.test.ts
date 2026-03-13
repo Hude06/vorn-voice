@@ -35,9 +35,9 @@ describe("registerIpcHandlers settings sanitization", () => {
       },
       coordinator: {
         updateSettings: vi.fn(),
-        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
-        armOnboardingVerification: vi.fn(() => ({ status: "armed", shortcut: DEFAULT_SETTINGS.shortcut })),
-        resetOnboardingVerification: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        armOnboardingVerification: vi.fn(() => ({ status: "armed", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        resetOnboardingVerification: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
         onOnboardingVerificationChanged: vi.fn(() => () => undefined)
       },
       hotkeyService: {
@@ -52,10 +52,22 @@ describe("registerIpcHandlers settings sanitization", () => {
         removeModel: vi.fn()
       },
       permissionService: {
-        openPrivacySettings: vi.fn(),
+        openSystemSettings: vi.fn(() => true),
         requestMicrophonePermission: vi.fn(),
-        checkAccessibilityPermission: vi.fn(() => true),
-        getMicrophonePermissionStatus: vi.fn(() => "granted")
+        getPermissionsSnapshot: vi.fn(() => ({
+          platform: "macos",
+          microphone: "granted",
+          autoPasteAccessGranted: true,
+          autoPasteAccessRequired: true,
+          autoPasteAccessLabel: "Accessibility",
+          autoPasteSupported: true,
+          canOpenMicrophoneSettings: true,
+          canOpenAutoPasteSettings: true,
+          hotkeyReady: true
+        }))
+      },
+      pasteService: {
+        getAvailability: vi.fn(async () => ({ supported: true }))
       },
       whisperService: {
         getDiagnostics: vi.fn(),
@@ -129,9 +141,9 @@ describe("registerIpcHandlers settings sanitization", () => {
       },
       coordinator: {
         updateSettings: vi.fn(),
-        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
-        armOnboardingVerification: vi.fn(() => ({ status: "armed", shortcut: DEFAULT_SETTINGS.shortcut })),
-        resetOnboardingVerification: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        armOnboardingVerification: vi.fn(() => ({ status: "armed", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        resetOnboardingVerification: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
         onOnboardingVerificationChanged: vi.fn(() => () => undefined)
       },
       hotkeyService: {
@@ -146,10 +158,22 @@ describe("registerIpcHandlers settings sanitization", () => {
         removeModel: vi.fn()
       },
       permissionService: {
-        openPrivacySettings: vi.fn(),
+        openSystemSettings: vi.fn(() => true),
         requestMicrophonePermission: vi.fn(),
-        checkAccessibilityPermission: vi.fn(() => true),
-        getMicrophonePermissionStatus: vi.fn(() => "granted")
+        getPermissionsSnapshot: vi.fn(() => ({
+          platform: "macos",
+          microphone: "granted",
+          autoPasteAccessGranted: true,
+          autoPasteAccessRequired: true,
+          autoPasteAccessLabel: "Accessibility",
+          autoPasteSupported: true,
+          canOpenMicrophoneSettings: true,
+          canOpenAutoPasteSettings: true,
+          hotkeyReady: true
+        }))
+      },
+      pasteService: {
+        getAvailability: vi.fn(async () => ({ supported: true }))
       },
       whisperService: {
         getDiagnostics: vi.fn(),
@@ -207,9 +231,9 @@ describe("registerIpcHandlers settings sanitization", () => {
       },
       coordinator: {
         updateSettings: vi.fn(),
-        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
-        armOnboardingVerification: vi.fn(() => ({ status: "armed", shortcut: DEFAULT_SETTINGS.shortcut })),
-        resetOnboardingVerification: vi.fn(() => ({ status: "idle", shortcut: DEFAULT_SETTINGS.shortcut })),
+        getOnboardingVerificationState: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        armOnboardingVerification: vi.fn(() => ({ status: "armed", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
+        resetOnboardingVerification: vi.fn(() => ({ status: "idle", hotkeyBehavior: DEFAULT_SETTINGS.hotkeyBehavior, shortcut: DEFAULT_SETTINGS.shortcut })),
         onOnboardingVerificationChanged: vi.fn(() => () => undefined)
       },
       hotkeyService: {
@@ -224,10 +248,22 @@ describe("registerIpcHandlers settings sanitization", () => {
         removeModel: vi.fn()
       },
       permissionService: {
-        openPrivacySettings: vi.fn(),
+        openSystemSettings: vi.fn(() => true),
         requestMicrophonePermission: vi.fn(),
-        checkAccessibilityPermission: vi.fn(() => true),
-        getMicrophonePermissionStatus: vi.fn(() => "granted")
+        getPermissionsSnapshot: vi.fn(() => ({
+          platform: "macos",
+          microphone: "granted",
+          autoPasteAccessGranted: true,
+          autoPasteAccessRequired: true,
+          autoPasteAccessLabel: "Accessibility",
+          autoPasteSupported: true,
+          canOpenMicrophoneSettings: true,
+          canOpenAutoPasteSettings: true,
+          hotkeyReady: true
+        }))
+      },
+      pasteService: {
+        getAvailability: vi.fn(async () => ({ supported: true }))
       },
       whisperService: {
         getDiagnostics: vi.fn(),

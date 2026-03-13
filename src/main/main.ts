@@ -28,6 +28,8 @@ async function bootstrap(): Promise<void> {
   const preloadPath = path.join(__dirname, "../preload/preload.js");
   const rendererURL = process.env.VITE_DEV_SERVER_URL;
   startupContext = { preloadPath, rendererURL };
+  settingsWindow = new SettingsWindow();
+  const settingsUi = settingsWindow;
 
   const settingsStore = new SettingsStore();
   const settings = settingsStore.load();
@@ -39,12 +41,9 @@ async function bootstrap(): Promise<void> {
   updateService = new UpdateService(process.env.VORN_UPDATE_FEED_URL);
   const updater = updateService;
   const modelManager = new ModelManager();
-  await modelManager.ensureBundledModel(settings.activeModelId).catch(() => undefined);
   const pasteService = new PasteService();
   const permissionService = new PermissionService();
   const speechStatsStore = new SpeechStatsStore();
-  settingsWindow = new SettingsWindow();
-  const settingsUi = settingsWindow;
   const overlayWindow = new OverlayWindow();
 
   overlayWindow.create(preloadPath, rendererURL);
@@ -67,6 +66,7 @@ async function bootstrap(): Promise<void> {
     coordinator,
     hotkeyService,
     modelManager,
+    pasteService,
     permissionService,
     whisperService,
     updater,
@@ -112,7 +112,11 @@ async function bootstrap(): Promise<void> {
     settingsUi.show(preloadPath, rendererURL, initialMode);
 
     if (initialMode === "settings") {
-      settingsStore.markPostOnboardingWindowSeen();
+      try {
+        settingsStore.markPostOnboardingWindowSeen();
+      } catch {
+        // ignore persistence issues here; the window is already visible
+      }
     }
   }
 }

@@ -25,3 +25,11 @@ mac:
   identity: "-"
   forceCodeSigning: true
   gatekeeperAssess: false
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: false

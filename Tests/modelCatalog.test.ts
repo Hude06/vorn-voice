@@ -7,8 +7,8 @@ describe("shared defaults", () => {
     expect(DEFAULT_SETTINGS.activeModelId).toBe(DEFAULT_MODEL_ID);
   });
 
-  it("keeps the default model bundled for first run", () => {
-    expect(BUNDLED_MODEL_IDS).toContain(DEFAULT_SETTINGS.activeModelId);
+  it("allows shipping without bundled speech models", () => {
+    expect(Array.isArray(BUNDLED_MODEL_IDS)).toBe(true);
   });
 
   it("includes every bundled model in the catalog", () => {

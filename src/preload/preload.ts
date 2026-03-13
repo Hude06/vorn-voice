@@ -9,11 +9,11 @@ import {
   OnboardingState,
   OnboardingVerificationState,
   OverlayPayload,
-  PrivacyPane,
   PermissionsSnapshot,
   SettingsWindowMode,
   SpeechStats,
   SpeechRuntimeDiagnostics,
+  SystemSettingsTarget,
   UpdateStatus,
   VoicebarApi
 } from "../shared/types";
@@ -82,8 +82,8 @@ const api: VoicebarApi = {
   requestMicrophonePermission(): Promise<boolean> {
     return ipcRenderer.invoke(IPC_CHANNELS.permissionsRequestMicrophone);
   },
-  openPrivacySettings(pane?: PrivacyPane): Promise<boolean> {
-    return ipcRenderer.invoke(IPC_CHANNELS.permissionsOpenPrivacy, pane);
+  openSystemSettings(target?: SystemSettingsTarget): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_CHANNELS.permissionsOpenPrivacy, target);
   },
   checkPermissions(): Promise<PermissionsSnapshot> {
     return ipcRenderer.invoke(IPC_CHANNELS.permissionsCheck);

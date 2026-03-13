@@ -1,8 +1,8 @@
 {
   "name": "vorn-voice",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "private": true,
-  "description": "Vorn Voice macOS menu bar speech-to-text app",
+  "description": "Vorn Voice desktop speech-to-text app",
   "main": "dist/main/main.js",
   "scripts": {
     "build": "npm run typecheck && npm run build:main && npm run build:renderer",
@@ -10,6 +10,8 @@
     "build:renderer": "vite build",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.json --noEmit",
     "prepare:vox-runtime": "node scripts/prepare-vox-runtime.mjs",
+    "prepare:vox-runtime:mac": "cross-env VOX_RUNTIME_TARGET=darwin node scripts/prepare-vox-runtime.mjs",
+    "prepare:vox-runtime:win": "cross-env VOX_RUNTIME_TARGET=win32 node scripts/prepare-vox-runtime.mjs",
     "dev": "npm run build:main && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http-get://127.0.0.1:5173/settings/index.html && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "start": "npm run build && electron .",
     "test": "vitest run --config vitest.config.ts",
@@ -18,10 +20,17 @@
     "verify:gatekeeper:mac": "spctl --assess --type execute -v \"release/mac-arm64/Vorn Voice.app\"",
     "package:mac:local": "npm run build && npm run prepare:vox-runtime && npx electron-builder --config electron-builder.local.yml --mac dmg",
     "package:mac:release": "npm run build && npm run prepare:vox-runtime && npx electron-builder --config electron-builder.yml --mac zip dmg",
+    "package:win:local": "npm run build && npm run prepare:vox-runtime:win && npx electron-builder --config electron-builder.local.yml --win nsis --x64",
+    "package:win:release": "npm run build && npm run prepare:vox-runtime:win && npx electron-builder --config electron-builder.yml --win nsis --x64",
     "deploy": "node scripts/deploy-release.mjs",
-    "deploy:patch": "node scripts/deploy-release.mjs --bump patch",
-    "deploy:minor": "node scripts/deploy-release.mjs --bump minor",
-    "deploy:major": "node scripts/deploy-release.mjs --bump major"
+    "deploy:mac": "node scripts/deploy-release.mjs --platform mac",
+    "deploy:win": "node scripts/deploy-release.mjs --platform windows",
+    "deploy:mac:patch": "node scripts/deploy-release.mjs --platform mac --bump patch",
+    "deploy:mac:minor": "node scripts/deploy-release.mjs --platform mac --bump minor",
+    "deploy:mac:major": "node scripts/deploy-release.mjs --platform mac --bump major",
+    "deploy:win:patch": "node scripts/deploy-release.mjs --platform windows --bump patch",
+    "deploy:win:minor": "node scripts/deploy-release.mjs --platform windows --bump minor",
+    "deploy:win:major": "node scripts/deploy-release.mjs --platform windows --bump major"
   },
   "dependencies": {
     "@radix-ui/react-switch": "^1.2.6",

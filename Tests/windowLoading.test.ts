@@ -73,10 +73,16 @@ describe("window loaders", () => {
     settingsWindow.show("/tmp/preload.js", "http://127.0.0.1:5173");
 
     expect(BrowserWindow).toHaveBeenCalledTimes(1);
-    const [options] = vi.mocked(BrowserWindow).mock.calls[0] as [{ webPreferences: { sandbox: boolean }; show: boolean; backgroundColor: string }];
+    const [options] = vi.mocked(BrowserWindow).mock.calls[0] as [{
+      webPreferences: { sandbox: boolean };
+      show: boolean;
+      backgroundColor: string;
+      titleBarStyle?: string;
+    }];
     expect(options.webPreferences.sandbox).toBe(false);
     expect(options.show).toBe(false);
     expect(options.backgroundColor).toBe("#050505");
+    expect(options.titleBarStyle).toBe(process.platform === "darwin" ? "hiddenInset" : undefined);
     expect(createdWindows[0].loadURL).toHaveBeenCalledWith("http://127.0.0.1:5173/settings/index.html?mode=settings");
   });
 

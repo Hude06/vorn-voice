@@ -45,8 +45,11 @@ function createHarness(options?: { initialSettings?: AppSettings; autoStart?: bo
   const pasteService = { pasteText: vi.fn(async () => undefined) };
   const permissionService = {
     getMicrophonePermissionStatus: vi.fn(() => "granted"),
+    getMicrophonePreflightStatus: vi.fn(() => "granted"),
     requestMicrophonePermission: vi.fn(async () => true),
-    checkAccessibilityPermission: vi.fn(() => true)
+    checkAutoPasteAccess: vi.fn(() => true),
+    getMicrophoneDeniedMessage: vi.fn(() => "Microphone permission is required"),
+    getAutoPasteAccessDeniedMessage: vi.fn(() => "Accessibility permission is required for paste automation")
   };
   const overlay = {
     show: vi.fn(),
@@ -268,7 +271,7 @@ describe("AppCoordinator error mode behavior", () => {
         autoPaste: true
       }
     });
-    harness.permissionService.checkAccessibilityPermission.mockReturnValue(false);
+    harness.permissionService.checkAutoPasteAccess.mockReturnValue(false);
 
     await harness.press();
     await harness.release();
@@ -316,7 +319,7 @@ describe("AppCoordinator error mode behavior", () => {
         autoPaste: true
       }
     });
-    harness.permissionService.checkAccessibilityPermission.mockReturnValue(false);
+    harness.permissionService.checkAutoPasteAccess.mockReturnValue(false);
 
     harness.coordinator.armOnboardingVerification();
     await harness.press();
@@ -330,7 +333,7 @@ describe("AppCoordinator error mode behavior", () => {
       durationMs: expect.any(Number),
       modelId: DEFAULT_SETTINGS.activeModelId,
       autoPasteEnabled: true,
-      accessibilityReady: false
+      autoPasteAccessReady: false
     });
     expect(harness.pasteService.pasteText).not.toHaveBeenCalled();
     expect(harness.overlay.show).toHaveBeenCalledWith("message", "Test complete");
@@ -338,7 +341,8 @@ describe("AppCoordinator error mode behavior", () => {
 
   it("marks onboarding verification as failed when microphone permission is denied", async () => {
     const harness = createHarness();
-    harness.permissionService.getMicrophonePermissionStatus.mockReturnValue("denied");
+    harness.permissionService.getMicrophonePreflightStatus.mockReturnValue("blocked");
+    harness.permissionService.getMicrophoneDeniedMessage.mockReturnValue("Microphone permission is required");
     harness.permissionService.requestMicrophonePermission.mockResolvedValue(false);
 
     harness.coordinator.armOnboardingVerification();
@@ -349,6 +353,24 @@ describe("AppCoordinator error mode behavior", () => {
       errorMessage: "Microphone permission is required"
     }));
     expect(harness.audioCapture.startCapture).not.toHaveBeenCalled();
+  });
+
+  it("resets onboarding verification when hotkey behavior changes", async () => {
+    const harness = createHarness();
+
+    harness.coordinator.armOnboardingVerification();
+    await harness.press();
+    await harness.release();
+
+    harness.coordinator.updateSettings({
+      ...DEFAULT_SETTINGS,
+      hotkeyBehavior: "toggle"
+    });
+
+    expect(harness.coordinator.getOnboardingVerificationState()).toEqual(expect.objectContaining({
+      status: "idle",
+      hotkeyBehavior: "toggle"
+    }));
   });
 
   it("toggles recording on repeated hotkey presses", async () => {
@@ -394,7 +416,7 @@ describe("AppCoordinator error mode behavior", () => {
 
   it("does not start capture when release happens during microphone permission request", async () => {
     const harness = createHarness();
-    harness.permissionService.getMicrophonePermissionStatus.mockReturnValue("not-determined");
+    harness.permissionService.getMicrophonePreflightStatus.mockReturnValue("requestable");
 
     let resolvePermission: (allowed: boolean) => void = () => undefined;
     const permissionPromise = new Promise<boolean>((resolve) => {
@@ -412,6 +434,28 @@ describe("AppCoordinator error mode behavior", () => {
     expect(harness.audioCapture.startCapture).not.toHaveBeenCalled();
     expect(harness.audioCapture.stopCapture).not.toHaveBeenCalled();
     expect(harness.whisper.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("allows Windows-style retryable microphone status to attempt capture", async () => {
+    const harness = createHarness();
+    harness.permissionService.getMicrophonePreflightStatus.mockReturnValue("retryable");
+
+    await harness.press();
+
+    expect(harness.permissionService.requestMicrophonePermission).not.toHaveBeenCalled();
+    expect(harness.audioCapture.startCapture).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps access-style capture failures to microphone guidance after retryable preflight", async () => {
+    const harness = createHarness();
+    harness.permissionService.getMicrophonePreflightStatus.mockReturnValue("retryable");
+    harness.permissionService.getMicrophoneDeniedMessage.mockReturnValue("Microphone access is blocked in system settings.");
+    harness.audioCapture.startCapture.mockRejectedValue(new Error("Permission denied opening microphone device"));
+
+    await harness.press();
+
+    expect(harness.state.getSnapshot().errorMessage).toBe("Microphone access is blocked in system settings.");
+    expect(harness.overlay.show).toHaveBeenCalledWith("message", "Microphone access is blocked in system settings.");
   });
 
   it("stops after startup when toggle mode receives a second press", async () => {

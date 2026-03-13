@@ -4,8 +4,9 @@ import { spawn } from "node:child_process";
 
 const root = process.cwd();
 const releaseDir = path.join(root, "release");
-const metadataFileName = "latest-mac.yml";
 const cliOptions = parseCliArgs(process.argv.slice(2));
+const updatePlatform = cliOptions.platform === "windows" ? "windows" : "mac";
+const metadataFileName = cliOptions.platform === "windows" ? "latest.yml" : "latest-mac.yml";
 
 await loadEnvFile(path.join(root, ".env"));
 await loadEnvFile(path.join(root, ".env.deploy"));
@@ -23,7 +24,7 @@ const deployUser = process.env.DEPLOY_USER;
 const deployBasePath = process.env.DEPLOY_BASE_PATH;
 const deployPort = process.env.DEPLOY_PORT || "22";
 const deploySshKey = process.env.DEPLOY_SSH_KEY;
-const deployPublicBaseUrl = process.env.DEPLOY_PUBLIC_BASE_URL || `https://${deployHost}/updates/mac/stable`;
+const deployPublicBaseUrl = process.env.DEPLOY_PUBLIC_BASE_URL || `https://${deployHost}/updates/${updatePlatform}/stable`;
 
 const sshArgs = [];
 if (deploySshKey) {
@@ -47,11 +48,16 @@ const packageVersion = await readPackageVersion(path.join(root, "package.json"))
 await fs.rm(releaseDir, { recursive: true, force: true });
 
 await run("npm", ["run", "build"]);
-await run("npm", ["run", "prepare:vox-runtime"]);
-await run("npx", ["electron-builder", "--config", "electron-builder.yml", "--mac", "zip", "dmg"]);
+await run("npm", ["run", cliOptions.platform === "windows" ? "prepare:vox-runtime:win" : "prepare:vox-runtime:mac"]);
+await run(
+  "npx",
+  cliOptions.platform === "windows"
+    ? ["electron-builder", "--config", "electron-builder.yml", "--win", "nsis", "--x64"]
+    : ["electron-builder", "--config", "electron-builder.yml", "--mac", "zip", "dmg"]
+);
 
 const metadataPath = path.join(releaseDir, metadataFileName);
-const metadata = await parseLatestMacMetadata(metadataPath);
+const metadata = await parseUpdateMetadata(metadataPath, metadataFileName);
 if (metadata.version !== packageVersion) {
   throw new Error(`Version mismatch: package.json=${packageVersion} but ${metadataFileName}=${metadata.version}`);
 }
@@ -161,7 +167,7 @@ async function readPackageVersion(packageJsonPath) {
   return parsed.version;
 }
 
-async function parseLatestMacMetadata(filePath) {
+async function parseUpdateMetadata(filePath, metadataLabel) {
   const raw = await fs.readFile(filePath, "utf8");
   const lines = raw.split(/\r?\n/);
   let version = "";
@@ -188,7 +194,7 @@ async function parseLatestMacMetadata(filePath) {
   }
 
   if (!version) {
-    throw new Error(`Could not parse version from ${metadataFileName}.`);
+    throw new Error(`Could not parse version from ${metadataLabel}.`);
   }
 
   return {
@@ -244,11 +250,30 @@ function stripWrappingQuotes(value) {
 
 function parseCliArgs(args) {
   const options = {
-    bump: null
+    bump: null,
+    platform: null
   };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg.startsWith("--platform")) {
+      const inlineValue = arg.includes("=") ? arg.split("=")[1] : undefined;
+      const nextValue = inlineValue ?? args[index + 1];
+      if (!nextValue) {
+        throw new Error("Missing value for --platform. Use mac or windows.");
+      }
+
+      if (!["mac", "windows"].includes(nextValue)) {
+        throw new Error(`Invalid --platform value: ${nextValue}. Use mac or windows.`);
+      }
+
+      options.platform = nextValue;
+      if (!inlineValue) {
+        index += 1;
+      }
+      continue;
+    }
+
     if (!arg.startsWith("--bump")) {
       continue;
     }
@@ -267,6 +292,10 @@ function parseCliArgs(args) {
     if (!inlineValue) {
       index += 1;
     }
+  }
+
+  if (!options.platform) {
+    throw new Error("Missing required --platform argument. Use mac or windows.");
   }
 
   return options;
